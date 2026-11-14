@@ -285,6 +285,34 @@ function mediaUrl(string $filename): string
     return 'index.php?media=' . rawurlencode($filename);
 }
 
+function cccApplicationBaseUrl(): string
+{
+    $configuredUrl = getenv('CCC_APP_URL');
+    if ($configuredUrl !== false && trim($configuredUrl) !== '') {
+        $configuredUrl = rtrim(trim($configuredUrl), '/');
+        $validatedUrl = filter_var($configuredUrl, FILTER_VALIDATE_URL);
+        $scheme = $validatedUrl === false ? '' : strtolower((string) parse_url($validatedUrl, PHP_URL_SCHEME));
+        if ($validatedUrl === false || !in_array($scheme, ['http', 'https'], true)) {
+            throw new RuntimeException('CCC_APP_URL harus berupa alamat dasar aplikasi dengan protokol HTTP atau HTTPS.');
+        }
+
+        return $configuredUrl;
+    }
+
+    $host = trim((string) ($_SERVER['HTTP_HOST'] ?? $_SERVER['SERVER_NAME'] ?? 'localhost'));
+    $hostName = strtolower((string) parse_url('http://' . $host, PHP_URL_HOST));
+    if (in_array($hostName, ['localhost', '127.0.0.1', '::1'], true)) {
+        $lanAddress = gethostbyname(gethostname());
+        if (filter_var($lanAddress, FILTER_VALIDATE_IP, FILTER_FLAG_IPV4)
+            && !str_starts_with($lanAddress, '127.')) {
+            $host = preg_replace('/^(localhost|127\.0\.0\.1)(:\d+)?$/i', $lanAddress . '$2', $host) ?? $host;
+        }
+    }
+
+    $scheme = isset($_SERVER['HTTPS']) && $_SERVER['HTTPS'] !== 'off' ? 'https' : 'http';
+    return $scheme . '://' . $host . rtrim(str_replace('\\', '/', dirname((string) ($_SERVER['SCRIPT_NAME'] ?? '/index.php'))), '/');
+}
+
 try {
     $data = loadData($dataFile);
 } catch (Throwable $exception) {
@@ -904,8 +932,8 @@ $csrf = h($_SESSION['csrf']);
                     <div class="panel"><div class="panel-head"><div><h2 class="panel-title">Form yang tersedia</h2><div class="panel-subtitle"><?= count($data['forms']) ?> form checklist</div></div></div>
                         <?php if (!$data['forms']): ?><div class="empty">Belum ada form.</div><?php endif; ?>
                         <?php foreach ($data['forms'] as $form):
-                            $formUrl = (isset($_SERVER['HTTPS']) && $_SERVER['HTTPS'] !== 'off' ? 'https://' : 'http://') . ($_SERVER['HTTP_HOST'] ?? 'localhost') . dirname($_SERVER['SCRIPT_NAME']) . '/index.php?page=fill&form=' . rawurlencode($form['id']);
-                        ?><div class="panel" style="box-shadow:none;background:#fbfcfe;margin:12px 0;padding:16px"><div class="panel-head" style="margin:0 0 13px"><div><h3 class="panel-title"><?= h($form['title']) ?></h3><div class="panel-subtitle"><?= count($form['questions']) ?> pertanyaan · Dibuat <?= h(date('d M Y', strtotime($form['createdAt']))) ?></div></div><div style="display:flex;gap:7px;flex-wrap:wrap"><a class="btn btn-light btn-small" href="index.php?page=edit-form&amp;id=<?= h($form['id']) ?>">Edit</a><a class="btn btn-light btn-small" href="index.php?page=fill&amp;form=<?= h($form['id']) ?>" target="_blank" rel="noopener">Pratinjau</a><form method="post" onsubmit="return confirm('Hapus form ini dari daftar? Riwayat checklist yang sudah dikirim tetap tersimpan.')"><input type="hidden" name="csrf" value="<?= $csrf ?>"><input type="hidden" name="action" value="delete_form"><input type="hidden" name="form_id" value="<?= h($form['id']) ?>"><button class="btn btn-danger btn-small" type="submit">Hapus</button></form></div></div><div class="qr-area"><img loading="lazy" src="https://api.qrserver.com/v1/create-qr-code/?size=180x180&amp;data=<?= rawurlencode($formUrl) ?>" alt="QR code <?= h($form['title']) ?>"><div><div class="field-label">QR Code untuk dibagikan</div><p class="help">Pindai untuk langsung membuka form tanpa login. Responden mengisi nama dan email sebelum mengirim.</p><div class="form-link"><?= h($formUrl) ?></div><a class="btn btn-light btn-small" style="margin-top:10px" href="https://api.qrserver.com/v1/create-qr-code/?size=600x600&amp;data=<?= rawurlencode($formUrl) ?>" target="_blank" rel="noopener">Buka / simpan QR</a></div></div></div><?php endforeach; ?>
+                            $formUrl = cccApplicationBaseUrl() . '/index.php?page=fill&form=' . rawurlencode($form['id']);
+                        ?><div class="panel" style="box-shadow:none;background:#fbfcfe;margin:12px 0;padding:16px"><div class="panel-head" style="margin:0 0 13px"><div><h3 class="panel-title"><?= h($form['title']) ?></h3><div class="panel-subtitle"><?= count($form['questions']) ?> pertanyaan · Dibuat <?= h(date('d M Y', strtotime($form['createdAt']))) ?></div></div><div style="display:flex;gap:7px;flex-wrap:wrap"><a class="btn btn-light btn-small" href="index.php?page=edit-form&amp;id=<?= h($form['id']) ?>">Edit</a><a class="btn btn-light btn-small" href="index.php?page=fill&amp;form=<?= h($form['id']) ?>" target="_blank" rel="noopener">Pratinjau</a><form method="post" onsubmit="return confirm('Hapus form ini dari daftar? Riwayat checklist yang sudah dikirim tetap tersimpan.')"><input type="hidden" name="csrf" value="<?= $csrf ?>"><input type="hidden" name="action" value="delete_form"><input type="hidden" name="form_id" value="<?= h($form['id']) ?>"><button class="btn btn-danger btn-small" type="submit">Hapus</button></form></div></div><div class="qr-area"><img loading="lazy" src="https://api.qrserver.com/v1/create-qr-code/?size=180x180&amp;data=<?= rawurlencode($formUrl) ?>" alt="QR code <?= h($form['title']) ?>"><div><div class="field-label">QR Code untuk dibagikan</div><p class="help">Pindai untuk langsung membuka form tanpa login. Responden mengisi nama dan email sebelum mengirim. Untuk akses internet, atur CCC_APP_URL ke domain HTTPS aplikasi.</p><div class="form-link"><?= h($formUrl) ?></div><a class="btn btn-light btn-small" style="margin-top:10px" href="https://api.qrserver.com/v1/create-qr-code/?size=600x600&amp;data=<?= rawurlencode($formUrl) ?>" target="_blank" rel="noopener">Buka / simpan QR</a></div></div></div><?php endforeach; ?>
                     </div>
                 <?php elseif ($page === 'users' && $role === 'Administrator'): ?>
                     <div class="page-heading"><div><div class="eyebrow">Access management</div><h1>Pengguna</h1><p>Kelola akun responden dan supervisor yang menerima notifikasi checklist.</p></div></div>
