@@ -190,7 +190,7 @@ function buildQuestionsFromPost(string $uploadDir, array $existingQuestions = []
     foreach ($texts as $index => $questionText) {
         $questionText = trim((string) $questionText);
         $type = (string) ($types[$index] ?? 'yes_no');
-        if ($questionText === '' || !in_array($type, ['yes_no', 'select', 'text', 'supervisor'], true)) {
+        if ($questionText === '' || !in_array($type, ['yes_no', 'verification', 'select', 'text', 'supervisor'], true)) {
             throw new RuntimeException('Pertanyaan tidak valid. Periksa kembali tipe dan isi pertanyaan.');
         }
         if ($type === 'supervisor' && ++$supervisorQuestionCount > 1) {
@@ -198,17 +198,28 @@ function buildQuestionsFromPost(string $uploadDir, array $existingQuestions = []
         }
 
         $options = [];
-        if ($type === 'select') {
+        if (in_array($type, ['select', 'verification'], true)) {
             $rawOptions = (string) ($optionTexts[$index] ?? '');
             $options = array_values(array_unique(array_filter(
                 array_map('trim', preg_split('/\R/u', $rawOptions) ?: []),
                 static fn(string $option): bool => $option !== ''
             )));
             if (count($options) < 1 || count($options) > 20) {
-                throw new RuntimeException('Pertanyaan pilihan harus memiliki minimal 1 dan maksimal 20 opsi yang berbeda.');
+                throw new RuntimeException($type === 'verification'
+                    ? 'Pilihan verifikasi harus memiliki minimal 1 dan maksimal 20 opsi yang berbeda.'
+                    : 'Pertanyaan pilihan harus memiliki minimal 1 dan maksimal 20 opsi yang berbeda.');
             }
             if (array_filter($options, static fn(string $option): bool => strlen($option) > 120)) {
                 throw new RuntimeException('Setiap opsi jawaban maksimal 120 karakter.');
+            }
+        }
+
+        $verificationMessage = '';
+        if ($type === 'verification') {
+            $verificationMessages = $_POST['verification_message'] ?? [];
+            $verificationMessage = trim((string) ($verificationMessages[$index] ?? ''));
+            if ($verificationMessage === '' || (function_exists('mb_strlen') ? mb_strlen($verificationMessage, 'UTF-8') : strlen($verificationMessage)) > 500) {
+                throw new RuntimeException('Pesan peringatan verifikasi wajib diisi dan maksimal 500 karakter.');
             }
         }
 
@@ -257,6 +268,7 @@ function buildQuestionsFromPost(string $uploadDir, array $existingQuestions = []
             'text' => $questionText,
             'image' => $mainImage !== '' ? $mainImage : ($originalQuestion['image'] ?? ''),
             'options' => $options,
+            'verificationMessage' => $verificationMessage,
             'followup' => '',
             'followupChoices' => $followupChoices,
             'followupImage' => $type === 'yes_no'
@@ -483,7 +495,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             foreach ($form['questions'] as $index => $question) {
                 $type = $question['type'] ?? 'yes_no';
                 $choice = trim((string) ($_POST['answer'][$index] ?? ''));
-                if ($type === 'yes_no' && !in_array($choice, ['Ya', 'Tidak'], true)) {
+                if (in_array($type, ['yes_no', 'verification'], true) && !in_array($choice, ['Ya', 'Tidak'], true)) {
                     throw new RuntimeException('Jawab Ya atau Tidak untuk setiap pertanyaan utama.');
                 }
                 if ($type === 'select' && !in_array($choice, $question['options'] ?? [], true)) {
@@ -500,6 +512,13 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 }
                 $followupChoiceAnswers = [];
                 $legacyFollowupAnswer = '';
+                $verificationAnswer = '';
+                if ($type === 'verification' && $choice === 'Tidak') {
+                    $verificationAnswer = trim((string) ($_POST['verification_answer'][$index] ?? ''));
+                    if (!in_array($verificationAnswer, $question['options'] ?? [], true)) {
+                        throw new RuntimeException('Pilih salah satu opsi verifikasi yang tersedia ketika jawaban Tidak.');
+                    }
+                }
                 if ($type === 'yes_no' && $choice === 'Ya') {
                     if (!empty($question['followupChoices'])) {
                         $submittedFollowupChoices = $_POST['followup_choice_answer'][$index] ?? [];
@@ -532,6 +551,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     'followup' => $type === 'yes_no' && $choice === 'Ya' && $followupChoiceAnswers === [] ? ($question['followup'] ?? '') : '',
                     'followupAnswer' => $legacyFollowupAnswer,
                     'followupChoiceAnswers' => $followupChoiceAnswers,
+                    'verificationMessage' => $type === 'verification' ? ($question['verificationMessage'] ?? '') : '',
+                    'verificationAnswer' => $verificationAnswer,
                 ];
             }
             $submission = [
@@ -556,6 +577,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 $emailBody .= ($number + 1) . ". {$answer['question']}\nJawaban: {$answer['choice']}\n";
                 if (($answer['type'] ?? 'yes_no') === 'supervisor') {
                     $emailBody .= "Email tujuan approval: {$answer['choice']}\n";
+                } elseif (($answer['type'] ?? 'yes_no') === 'verification' && $answer['choice'] === 'Tidak') {
+                    $emailBody .= "Peringatan: {$answer['verificationMessage']}\nPilihan verifikasi: {$answer['verificationAnswer']}\n";
                 } elseif (($answer['type'] ?? 'yes_no') === 'yes_no' && $answer['choice'] === 'Ya') {
                     if (($answer['followup'] ?? '') !== '') {
                         $emailBody .= "{$answer['followup']}\nJawaban lanjutan: {$answer['followupAnswer']}\n";
@@ -671,6 +694,11 @@ $csrf = h($_SESSION['csrf']);
         @media(max-width:430px){.cards{grid-template-columns:1fr 1fr}.stat-top{font-size:10px}.stat-icon{width:28px;height:28px}.btn{padding:9px 11px}.top-actions{gap:7px}}
         .preview-dialog{width:min(760px,calc(100% - 24px));max-height:90vh;overflow:auto;border:1px solid var(--line);border-radius:16px;padding:22px;background:var(--canvas);color:var(--ink);box-shadow:var(--shadow)}.preview-dialog::backdrop{background:rgba(17,24,39,.58);backdrop-filter:blur(3px)}.preview-dialog-head{display:flex;justify-content:space-between;align-items:flex-start;gap:15px;margin-bottom:8px}.preview-dialog-head h2{margin:4px 0 0;font-size:21px}.preview-response{margin-top:18px;padding:17px;background:#fff;border:1px solid var(--line);border-radius:12px}.preview-response .question-card{margin:12px 0}.preview-actions{display:flex;gap:9px;flex-wrap:wrap;margin-top:16px}.preview-dialog .question-image{margin-left:41px}.preview-response .question-image{max-height:160px}.company-logo{display:block;width:auto;max-width:min(100%,240px);max-height:100px;object-fit:contain;object-position:left center;margin:0 0 16px}.logo-editor-preview{margin:8px 0;max-height:80px}.logo-remove{display:flex;align-items:center;gap:7px;font-size:11px;color:var(--muted)}.logo-remove input{width:auto}.preview-company-logo{max-width:180px;max-height:70px;margin:12px 0}@media(max-width:600px){.preview-dialog{padding:16px}.preview-dialog .question-image{margin-left:0}}
         .sidebar{transition:transform .2s ease}.shell.sidebar-hidden .sidebar{transform:translateX(-100%)}.shell.sidebar-hidden .main{margin-left:0}.sidebar-brand-row{display:flex;align-items:center;gap:5px}.sidebar-brand-row .brand{flex:1;min-width:0}.sidebar-toggle-side{color:#d7e0eb;background:#263244;border:1px solid #37465b;padding:6px 9px}.sidebar-toggle-side:hover{background:#37465b}.topbar{justify-content:flex-start;gap:16px}.topbar-left{display:flex;align-items:center;gap:12px;min-width:0}.sidebar-toggle{flex:none;padding:8px 11px}.crumb{white-space:nowrap}.top-actions{margin-left:auto}.profile{align-items:stretch;flex-direction:column;gap:12px}.profile-user{display:flex;align-items:center;gap:10px;min-width:0}.logout-form{width:100%}.logout-button{width:100%;background:#263244;color:#fff;justify-content:flex-start;padding:9px 11px}.logout-button:hover{background:#37465b}
+        .verification-dialog{width:min(500px,calc(100% - 28px));border:1px solid var(--line);border-radius:14px;padding:22px;background:#fff;color:var(--ink);box-shadow:var(--shadow)}.verification-dialog::backdrop{background:rgba(17,24,39,.58);backdrop-filter:blur(3px)}.verification-dialog-head{display:flex;align-items:flex-start;gap:12px;margin-bottom:16px}.verification-dialog-head>div{flex:1}.verification-dialog-head h2{font-size:17px;margin:0 0 5px}.verification-dialog-head p{font-size:12px;color:var(--muted);margin:0}.verification-icon{width:30px;height:30px;flex:none;border-radius:50%;display:grid;place-items:center;background:#fff3dc;color:#9b6400;font-weight:900}.verification-dialog .field{margin-bottom:13px}.verification-confirm:disabled{opacity:.5;cursor:not-allowed}
+        .password-control{position:relative}.password-control input{padding-right:48px}.password-visibility{position:absolute;right:7px;top:50%;transform:translateY(-50%);display:grid;place-items:center;width:34px;height:34px;border:0;background:transparent;color:var(--muted);padding:7px;border-radius:6px}.password-visibility:hover{background:var(--mint);color:var(--accent)}.password-visibility:focus-visible{outline:2px solid var(--accent);outline-offset:2px}.password-visibility svg{width:18px;height:18px;fill:none;stroke:currentColor;stroke-width:1.8;stroke-linecap:round;stroke-linejoin:round}.password-visibility [hidden]{display:none}
+        @media(max-width:900px){.shell:not(.sidebar-hidden)::before{content:"";position:fixed;inset:0;background:rgba(17,24,39,.42);z-index:2}.sidebar{width:254px;padding:20px 18px;transform:translateX(-100%)}.shell:not(.sidebar-hidden) .sidebar{transform:translateX(0)}.shell.sidebar-hidden .sidebar{transform:translateX(-100%)}.main,.shell.sidebar-hidden .main{margin-left:0}.topbar{position:sticky;z-index:5;padding:0 20px}.topbar-toggle,.shell:not(.sidebar-hidden) .topbar-toggle{visibility:visible}.content{width:100%;padding:26px 20px 44px}.table-wrap{max-width:100%;overflow-x:auto;-webkit-overflow-scrolling:touch}.panel-head{flex-wrap:wrap;align-items:flex-start}.panel-head>.btn{flex:none}.login-page{grid-template-columns:1fr}.login-aside{min-height:245px;padding:24px}.login-copy{margin:37px 0 12px}.login-copy h1{font-size:32px}.login-footer{display:none}.login-form-side{padding:34px 23px}}
+        @media(max-width:600px){body{font-size:14px}.topbar{min-height:58px;height:auto;padding:9px 13px;gap:8px}.topbar-left{gap:8px}.topbar-toggle{padding:8px 10px}.crumb{overflow:hidden;text-overflow:ellipsis}.top-actions{gap:7px}.content{padding:22px 13px 36px}.page-heading{gap:13px;margin-bottom:20px}.page-heading h1{font-size:22px}.page-heading>.btn{max-width:100%;white-space:normal}.cards{grid-template-columns:repeat(2,minmax(0,1fr));gap:9px}.stat-card{padding:12px}.stat-top{gap:6px}.stat-number{font-size:22px}.panel{padding:14px;border-radius:11px}.form-grid{grid-template-columns:minmax(0,1fr);gap:0}.field input,.field textarea,.field select{min-height:44px;font-size:16px}.field textarea{min-height:88px}.btn{min-height:40px}.btn-small{min-height:38px}.question-card{padding:13px}.question-title{gap:9px}.answer-choice{flex-wrap:wrap;gap:8px}.choice{min-height:42px;padding:9px 12px}.question-image,.preview-dialog .question-image{max-width:100%;margin-left:0}.panel-head{gap:10px}.panel-head>div{min-width:0}.panel-head>.btn{white-space:nowrap}.qr-area{width:100%;align-items:flex-start;flex-direction:column}.qr-area img{max-width:min(100%,180px);height:auto}.form-link{max-width:100%;overflow-wrap:anywhere}.preview-dialog,.verification-dialog{width:calc(100% - 20px);max-height:calc(100% - 20px);padding:16px}.preview-dialog-head{gap:10px}.preview-dialog-head h2{font-size:18px}.login-page{min-height:100vh;min-height:100dvh}.login-form-side{padding:28px 20px}.login-aside{min-height:220px}.password-visibility{width:40px;height:40px}.password-control input{padding-right:52px}}
+        @media(max-width:380px){.cards{grid-template-columns:minmax(0,1fr)}.stat-card{padding:14px}.top-actions .muted{display:none}.content{padding-right:11px;padding-left:11px}.topbar{padding-right:10px;padding-left:10px}.page-heading h1{font-size:20px}.panel{padding:12px}}
         @media(max-width:760px){.sidebar{width:254px;padding:20px 18px;transform:translateX(0)}.brand{padding:4px 10px 28px}.brand-name,.nav-link span:not(.nav-icon),.nav-label,.profile-text{display:initial}.brand-name{display:block}.nav-link{justify-content:flex-start;padding:11px 12px}.nav-icon{font-size:initial}.profile{justify-content:flex-start;padding:17px 7px 0}.main{margin-left:0}.shell.sidebar-hidden .main{margin-left:0}.shell:not(.sidebar-hidden) .topbar-toggle{visibility:hidden}.shell.sidebar-hidden .topbar-toggle{visibility:visible}.topbar{padding:0 15px;z-index:5}.content{padding:24px 15px 40px}}
     </style>
 </head>
@@ -688,12 +716,31 @@ $csrf = h($_SESSION['csrf']);
                 <div class="eyebrow">Akses sistem</div><h2>Selamat datang kembali</h2><p>Masuk dengan akun yang telah diberikan oleh administrator.</p>
                 <?php if ($flash): ?><div class="alert <?= h($flash['type']) ?>"><?= h($flash['message']) ?></div><?php endif; ?>
                 <div class="field"><label for="username">Nama pengguna</label><input id="username" name="username" required autocomplete="username" autofocus placeholder="Masukkan nama pengguna"></div>
-                <div class="field"><label for="password">Kata sandi</label><input id="password" name="password" required type="password" autocomplete="current-password" placeholder="Masukkan kata sandi"></div>
+                <div class="field"><label for="password">Kata sandi</label><div class="password-control"><input id="password" name="password" required type="password" autocomplete="current-password" placeholder="Masukkan kata sandi"><button class="password-visibility" type="button" aria-controls="password" aria-label="Tampilkan kata sandi" aria-pressed="false"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M2 12s3.6-7 10-7 10 7 10 7-3.6 7-10 7-10-7-10-7Z"></path><circle cx="12" cy="12" r="3"></circle></svg><svg viewBox="0 0 24 24" aria-hidden="true" hidden><path d="m3 3 18 18"></path><path d="M10.6 10.6a2 2 0 0 0 2.8 2.8"></path><path d="M9.9 5.2A10.7 10.7 0 0 1 12 5c6.4 0 10 7 10 7a15.7 15.7 0 0 1-3.1 3.9"></path><path d="M6.6 6.6C3.7 8.5 2 12 2 12s3.6 7 10 7a10.7 10.7 0 0 0 4.1-.8"></path></svg></button></div></div>
                 <button class="btn btn-primary" style="width:100%;margin-top:5px" type="submit">Masuk ke aplikasi <span aria-hidden="true">→</span></button>
-                <div class="demo-box"><strong>Akun awal untuk uji coba lokal</strong><br>Administrator: admin / Admin123!<br>Supervisor: supervisor / Supervisor123!<br>Responden: responden / User123!<br>Ganti kredensial awal sebelum dipakai di lingkungan produksi.</div>
             </form>
         </section>
     </main>
+    <script>
+        (() => {
+            const passwordInput = document.getElementById('password');
+            const toggleButton = document.querySelector('.password-visibility');
+            if (!passwordInput || !toggleButton) {
+                return;
+            }
+
+            toggleButton.addEventListener('click', () => {
+                const isVisible = passwordInput.type === 'text';
+                passwordInput.type = isVisible ? 'password' : 'text';
+                toggleButton.querySelectorAll('svg').forEach((icon, index) => {
+                    icon.hidden = isVisible ? index === 1 : index === 0;
+                });
+                toggleButton.setAttribute('aria-label', isVisible ? 'Tampilkan kata sandi' : 'Sembunyikan kata sandi');
+                toggleButton.setAttribute('aria-pressed', String(!isVisible));
+                passwordInput.focus();
+            });
+        })();
+    </script>
 <?php else:
     $role = $user['role'];
     $pageTitles = ['dashboard' => 'Dashboard', 'forms' => 'Form checklist', 'edit-form' => 'Edit form', 'users' => 'Pengguna', 'my-submissions' => 'Riwayat pengisian', 'fill' => 'Isi checklist'];
@@ -744,7 +791,7 @@ $csrf = h($_SESSION['csrf']);
                             <?php foreach ($selectedForm['questions'] as $index => $question): ?>
                                 <?php $questionType = $question['type'] ?? 'yes_no'; ?>
                                 <section class="question-card" data-question data-type="<?= h($questionType) ?>">
-                                    <div class="question-title"><span class="question-number"><?= str_pad((string) ($index + 1), 2, '0', STR_PAD_LEFT) ?></span><div><h3><?= h($question['text']) ?></h3><p><?= $questionType === 'select' ? 'Pilih satu opsi jawaban.' : ($questionType === 'text' ? 'Isi jawaban teks.' : ($questionType === 'supervisor' ? 'Pilih supervisor yang akan menerima hasil checklist untuk approval.' : 'Pilih Ya atau Tidak untuk melanjutkan.')) ?></p></div></div>
+                                    <div class="question-title"><span class="question-number"><?= str_pad((string) ($index + 1), 2, '0', STR_PAD_LEFT) ?></span><div><h3><?= h($question['text']) ?></h3><p><?= $questionType === 'select' ? 'Pilih satu opsi jawaban.' : ($questionType === 'text' ? 'Isi jawaban teks.' : ($questionType === 'supervisor' ? 'Pilih supervisor yang akan menerima hasil checklist untuk approval.' : ($questionType === 'verification' ? 'Pilih Ya atau Tidak. Jawaban Tidak memerlukan konfirmasi.' : 'Pilih Ya atau Tidak untuk melanjutkan.'))) ?></p></div></div>
                                     <?php if ($question['image'] !== ''): ?><img class="question-image" src="<?= h(mediaUrl($question['image'])) ?>" alt="Gambar pendukung pertanyaan <?= $index + 1 ?>"><?php endif; ?>
                                     <?php if ($questionType === 'select'): ?>
                                         <div class="field" style="margin:15px 0 0 41px"><label for="answer-<?= $index ?>">Pilih satu jawaban</label><select class="answer-select" id="answer-<?= $index ?>" name="answer[<?= $index ?>]" required><option value="">Pilih jawaban</option><?php foreach (($question['options'] ?? []) as $option): ?><option value="<?= h($option) ?>"><?= h($option) ?></option><?php endforeach; ?></select></div>
@@ -752,6 +799,16 @@ $csrf = h($_SESSION['csrf']);
                                         <div class="field" style="margin:15px 0 0 41px"><label for="answer-<?= $index ?>">Jawaban teks <span style="color:#b42318">*</span></label><input class="answer-text" id="answer-<?= $index ?>" name="answer[<?= $index ?>]" type="text" maxlength="500" required placeholder="Contoh: tuliskan nama lengkap Anda"></div>
                                     <?php elseif ($questionType === 'supervisor'): ?>
                                         <div class="field" style="margin:15px 0 0 41px"><label for="answer-<?= $index ?>">Email supervisor tujuan approval <span style="color:#b42318">*</span></label><select class="answer-select" id="answer-<?= $index ?>" name="answer[<?= $index ?>]" required><option value="">Pilih supervisor</option><?php foreach ($supervisors as $supervisor): ?><option value="<?= h($supervisor['username']) ?>"><?= h($supervisor['name']) ?> · <?= h($supervisor['email']) ?></option><?php endforeach; ?></select></div>
+                                    <?php elseif ($questionType === 'verification'): ?>
+                                        <div class="answer-choice">
+                                            <label class="choice"><input type="radio" name="answer[<?= $index ?>]" value="Ya" required> Ya</label>
+                                            <label class="choice"><input type="radio" name="answer[<?= $index ?>]" value="Tidak" required> Tidak</label>
+                                        </div>
+                                        <dialog class="verification-dialog" aria-labelledby="verification-title-<?= $index ?>">
+                                            <div class="verification-dialog-head"><span class="verification-icon" aria-hidden="true">!</span><div><h2 id="verification-title-<?= $index ?>">Peringatan verifikasi</h2><p><?= h($question['verificationMessage'] ?? '') ?></p></div><button class="btn btn-light btn-small" type="button" data-close-verification aria-label="Tutup peringatan">Tutup</button></div>
+                                            <div class="field"><label for="verification-answer-<?= $index ?>">Pilih alasan / tindak lanjut <span style="color:#b42318">*</span></label><select class="verification-answer" id="verification-answer-<?= $index ?>" name="verification_answer[<?= $index ?>]" disabled><option value="">Pilih salah satu opsi</option><?php foreach (($question['options'] ?? []) as $option): ?><option value="<?= h($option) ?>"><?= h($option) ?></option><?php endforeach; ?></select></div>
+                                            <button class="btn btn-primary verification-confirm" type="button" disabled>Konfirmasi pilihan</button>
+                                        </dialog>
                                     <?php else: ?>
                                         <div class="answer-choice">
                                             <label class="choice"><input type="radio" name="answer[<?= $index ?>]" value="Ya" required> Ya</label>
@@ -769,7 +826,7 @@ $csrf = h($_SESSION['csrf']);
                                     <?php endif; ?>
                                 </section>
                             <?php endforeach; ?>
-                            <div class="alert warning" style="margin-top:15px;margin-bottom:14px">Jawaban <strong>Ya</strong> akan membuka pertanyaan lanjutan bertipe pilihan. Jawaban <strong>Tidak</strong> akan langsung melanjutkan ke pertanyaan utama berikutnya.</div>
+                            <div class="alert warning" style="margin-top:15px;margin-bottom:14px">Pada pertanyaan Ya/Tidak biasa, jawaban <strong>Ya</strong> membuka pertanyaan lanjutan pilihan. Pada <strong>Verifikasi Ya/Tidak</strong>, jawaban <strong>Tidak</strong> membuka peringatan dan mewajibkan pilihan tindak lanjut, sedangkan jawaban Ya dapat langsung dikirim.</div>
                             <button class="btn btn-primary" type="submit">Kirim checklist <span aria-hidden="true">→</span></button>
                         </form>
                     </div>
@@ -791,7 +848,7 @@ $csrf = h($_SESSION['csrf']);
                                 <?php if (($editingForm['logo'] ?? '') !== ''): ?><img class="company-logo logo-editor-preview" src="<?= h(mediaUrl($editingForm['logo'])) ?>" alt="Logo perusahaan saat ini"><label class="logo-remove"><input type="checkbox" name="remove_company_logo" value="1"> Hapus logo saat ini</label><?php endif; ?>
                             </div>
                             <div id="question-list"></div>
-                            <div style="display:flex;gap:9px;flex-wrap:wrap"><button class="btn btn-light" type="button" id="add-question">＋ Pertanyaan Ya/Tidak</button><button class="btn btn-light" type="button" id="add-select-question">＋ Pertanyaan pilihan</button><button class="btn btn-light" type="button" id="add-text-question">＋ Isian teks</button><button class="btn btn-light" type="button" id="add-supervisor-question">＋ Pilihan email supervisor</button></div>
+                            <div style="display:flex;gap:9px;flex-wrap:wrap"><button class="btn btn-light" type="button" id="add-question">＋ Pertanyaan Ya/Tidak</button><button class="btn btn-light" type="button" id="add-verification-question">＋ Verifikasi Ya/Tidak</button><button class="btn btn-light" type="button" id="add-select-question">＋ Pertanyaan pilihan</button><button class="btn btn-light" type="button" id="add-text-question">＋ Isian teks</button><button class="btn btn-light" type="button" id="add-supervisor-question">＋ Pilihan email supervisor</button></div>
                             <div style="display:flex;gap:9px;margin-top:17px"><button class="btn btn-light" type="button" id="preview-form">Pratinjau / uji form</button><button class="btn btn-primary" type="submit">Simpan perubahan</button><a class="btn btn-light" href="index.php?page=forms">Batal</a></div>
                         </form>
                     </div>
@@ -809,14 +866,14 @@ $csrf = h($_SESSION['csrf']);
                 <?php elseif ($page === 'edit-form' && $role === 'Administrator'): ?>
                     <div class="empty"><strong>Form tidak ditemukan</strong>Form mungkin sudah dihapus. <a href="index.php?page=forms">Kembali ke daftar form</a></div>
                 <?php elseif ($page === 'forms' && $role === 'Administrator'): ?>
-                    <div class="page-heading"><div><div class="eyebrow">Questionnaire management</div><h1>Form checklist</h1><p>Buat pertanyaan Ya/Tidak, pilihan tunggal, isian teks, atau pilihan email supervisor untuk approval.</p></div><a class="btn btn-light" href="index.php">← Dashboard</a></div>
+                    <div class="page-heading"><div><div class="eyebrow">Questionnaire management</div><h1>Form checklist</h1><p>Buat pertanyaan Ya/Tidak, verifikasi Ya/Tidak, pilihan tunggal, isian teks, atau pilihan email supervisor untuk approval.</p></div><a class="btn btn-light" href="index.php">← Dashboard</a></div>
                     <div class="panel"><div class="panel-head"><div><h2 class="panel-title">Buat form baru</h2><div class="panel-subtitle">Tambahkan pertanyaan checklist, termasuk pilihan satu supervisor yang menerima permintaan approval. Setiap form maksimal memiliki satu pertanyaan supervisor.</div></div></div>
                         <form method="post" enctype="multipart/form-data">
                             <input type="hidden" name="csrf" value="<?= $csrf ?>"><input type="hidden" name="action" value="create_form">
                             <div class="form-grid"><div class="field"><label>Judul form</label><input name="title" maxlength="120" required placeholder="Contoh: Inspeksi keselamatan harian"></div><div class="field"><label>Deskripsi</label><input name="description" maxlength="240" placeholder="Petunjuk singkat untuk responden"></div></div>
                             <div class="field"><label for="company-logo">Logo perusahaan (opsional)</label><input id="company-logo" type="file" name="company_logo" accept="image/jpeg,image/png,image/webp"><span class="help">Format JPG, PNG, atau WEBP · Maksimal 4 MB. Logo akan tampil di bagian atas form responden.</span></div>
                             <div id="question-list"></div>
-                            <div style="display:flex;gap:9px;flex-wrap:wrap"><button class="btn btn-light" type="button" id="add-question">＋ Pertanyaan Ya/Tidak</button><button class="btn btn-light" type="button" id="add-select-question">＋ Pertanyaan pilihan</button><button class="btn btn-light" type="button" id="add-text-question">＋ Isian teks</button><button class="btn btn-light" type="button" id="add-supervisor-question">＋ Pilihan email supervisor</button></div>
+                            <div style="display:flex;gap:9px;flex-wrap:wrap"><button class="btn btn-light" type="button" id="add-question">＋ Pertanyaan Ya/Tidak</button><button class="btn btn-light" type="button" id="add-verification-question">＋ Verifikasi Ya/Tidak</button><button class="btn btn-light" type="button" id="add-select-question">＋ Pertanyaan pilihan</button><button class="btn btn-light" type="button" id="add-text-question">＋ Isian teks</button><button class="btn btn-light" type="button" id="add-supervisor-question">＋ Pilihan email supervisor</button></div>
                             <div style="display:flex;gap:9px;flex-wrap:wrap;margin-top:17px"><button class="btn btn-light" type="button" id="preview-form">Pratinjau / uji form</button><button class="btn btn-primary" type="submit">Simpan form</button></div>
                         </form>
                     </div>
@@ -860,7 +917,7 @@ $csrf = h($_SESSION['csrf']);
                         <div class="table-wrap"><table><thead><tr><th>Checklist / responden</th><th>Email responden</th><th>Waktu dikirim</th><th>Status email</th><th>Status approval</th><th>Aksi</th></tr></thead><tbody>
                             <?php foreach (($page === 'my-submissions' ? $visibleSubmissions : array_slice($visibleSubmissions, 0, 12)) as $submission): ?>
                                 <tr><td><div class="person"><div class="person-dot"><?= h(strtoupper(substr($submission['respondent'], 0, 1))) ?></div><div><strong><?= h($submission['formTitle']) ?></strong><div class="muted" style="font-size:10px"><?= h($submission['respondent']) ?></div></div></div></td><td><?= h($submission['respondentEmail']) ?></td><td><?= h(date('d M Y, H:i', strtotime($submission['submittedAt']))) ?> WIB</td><td><span class="badge <?= str_starts_with($submission['emailStatus'], 'Terkirim') ? 'approved' : 'failed' ?>"><?= h($submission['emailStatus']) ?></span></td><td><span class="badge <?= $submission['status'] === 'Disetujui' ? 'approved' : 'pending' ?>"><?= h($submission['status']) ?></span><?php if ($submission['status'] === 'Disetujui'): ?><div class="muted" style="font-size:9px;margin-top:4px">oleh <?= h($submission['approvedBy']) ?></div><?php endif; ?></td><td><?php if ($submission['status'] === 'Menunggu approval'): ?><form method="post" onsubmit="return confirm('Setujui checklist ini?')"><input type="hidden" name="csrf" value="<?= $csrf ?>"><input type="hidden" name="action" value="approve"><input type="hidden" name="submission_id" value="<?= h($submission['id']) ?>"><button class="btn btn-primary btn-small" type="submit">✓ Setujui</button></form><?php else: ?><span class="muted">Selesai</span><?php endif; ?></td></tr>
-                                <tr><td colspan="6"><details><summary style="cursor:pointer;color:#617080;font-size:10px">Lihat jawaban (<?= count($submission['answers']) ?>)</summary><div class="submission-detail"><?php foreach ($submission['answers'] as $index => $answer): ?><p><strong><?= $index + 1 ?>. <?= h($answer['question']) ?></strong><br>Jawaban: <?php if (($answer['type'] ?? 'yes_no') === 'text'): ?><span style="white-space:pre-wrap;overflow-wrap:anywhere"><?= h($answer['choice']) ?></span><?php else: ?><span class="badge <?= $answer['choice'] === 'Ya' ? 'approved' : '' ?>"><?= h($answer['choice']) ?></span><?php endif; ?><?php if (($answer['type'] ?? 'yes_no') === 'yes_no' && $answer['choice'] === 'Ya'): ?><?php if (($answer['followup'] ?? '') !== ''): ?><br><?= h($answer['followup']) ?>: <?= h($answer['followupAnswer'] ?? '') ?><?php endif; ?><?php foreach ($answer['followupChoiceAnswers'] ?? [] as $followupChoiceAnswer): ?><br><?= h($followupChoiceAnswer['question']) ?>: <span class="badge"><?= h($followupChoiceAnswer['choice']) ?></span><?php endforeach; ?><?php endif; ?></p><?php endforeach; ?><p class="muted">Supervisor: <?= h($submission['supervisorName']) ?><?= $submission['approvedAt'] !== '' ? ' · Disetujui ' . h(date('d M Y, H:i', strtotime($submission['approvedAt']))) . ' WIB' : '' ?></p></div></details></td></tr>
+                                <tr><td colspan="6"><details><summary style="cursor:pointer;color:#617080;font-size:10px">Lihat jawaban (<?= count($submission['answers']) ?>)</summary><div class="submission-detail"><?php foreach ($submission['answers'] as $index => $answer): ?><p><strong><?= $index + 1 ?>. <?= h($answer['question']) ?></strong><br>Jawaban: <?php if (($answer['type'] ?? 'yes_no') === 'text'): ?><span style="white-space:pre-wrap;overflow-wrap:anywhere"><?= h($answer['choice']) ?></span><?php else: ?><span class="badge <?= $answer['choice'] === 'Ya' ? 'approved' : '' ?>"><?= h($answer['choice']) ?></span><?php endif; ?><?php if (($answer['type'] ?? '') === 'verification' && $answer['choice'] === 'Tidak'): ?><br><span class="muted"><?= h($answer['verificationMessage'] ?? 'Peringatan') ?></span><br>Pilihan: <span class="badge"><?= h($answer['verificationAnswer'] ?? '') ?></span><?php endif; ?><?php if (($answer['type'] ?? 'yes_no') === 'yes_no' && $answer['choice'] === 'Ya'): ?><?php if (($answer['followup'] ?? '') !== ''): ?><br><?= h($answer['followup']) ?>: <?= h($answer['followupAnswer'] ?? '') ?><?php endif; ?><?php foreach ($answer['followupChoiceAnswers'] ?? [] as $followupChoiceAnswer): ?><br><?= h($followupChoiceAnswer['question']) ?>: <span class="badge"><?= h($followupChoiceAnswer['choice']) ?></span><?php endforeach; ?><?php endif; ?></p><?php endforeach; ?><p class="muted">Supervisor: <?= h($submission['supervisorName']) ?><?= $submission['approvedAt'] !== '' ? ' · Disetujui ' . h(date('d M Y, H:i', strtotime($submission['approvedAt']))) . ' WIB' : '' ?></p></div></details></td></tr>
                             <?php endforeach; ?>
                         </tbody></table></div><?php endif; ?>
                     </section>
@@ -878,7 +935,8 @@ $csrf = h($_SESSION['csrf']);
             const addSelectButton = document.getElementById('add-select-question');
             const addTextButton = document.getElementById('add-text-question');
             const addSupervisorButton = document.getElementById('add-supervisor-question');
-            if (list && addYesNoButton && addSelectButton && addTextButton && addSupervisorButton) {
+            const addVerificationButton = document.getElementById('add-verification-question');
+            if (list && addYesNoButton && addSelectButton && addTextButton && addSupervisorButton && addVerificationButton) {
                 const addQuestion = (type, initialQuestion = null, originalIndex = -1) => {
                     if (type === 'supervisor' && list.querySelector('input[name="question_type[]"][value="supervisor"]')) {
                         if (initialQuestion === null) {
@@ -892,20 +950,23 @@ $csrf = h($_SESSION['csrf']);
                     const isSelect = type === 'select';
                     const isText = type === 'text';
                     const isSupervisor = type === 'supervisor';
-                    const typeLabel = isSelect ? 'Pilihan tunggal' : (isText ? 'Isian teks' : (isSupervisor ? 'Email supervisor approval' : 'Ya/Tidak + pilihan lanjutan'));
-                    const questionLabel = isSelect ? 'Pertanyaan pilihan tunggal' : (isText ? 'Pertanyaan isian teks' : (isSupervisor ? 'Label pilihan supervisor' : 'Pertanyaan utama (jawaban Ya/Tidak)'));
-                    const questionExample = isSelect ? 'Contoh: Pilih kondisi area kerja saat ini.' : (isText ? 'Contoh: Tuliskan nama lengkap Anda.' : (isSupervisor ? 'Contoh: Pilih supervisor untuk menerima permintaan approval.' : 'Contoh: Apakah pelindung mesin terpasang dengan baik?'));
+                    const isVerification = type === 'verification';
+                    const typeLabel = isSelect ? 'Pilihan tunggal' : (isText ? 'Isian teks' : (isSupervisor ? 'Email supervisor approval' : (isVerification ? 'Verifikasi Ya/Tidak' : 'Ya/Tidak + pilihan lanjutan')));
+                    const questionLabel = isSelect ? 'Pertanyaan pilihan tunggal' : (isText ? 'Pertanyaan isian teks' : (isSupervisor ? 'Label pilihan supervisor' : (isVerification ? 'Pertanyaan verifikasi (Ya/Tidak)' : 'Pertanyaan utama (jawaban Ya/Tidak)')));
+                    const questionExample = isSelect ? 'Contoh: Pilih kondisi area kerja saat ini.' : (isText ? 'Contoh: Tuliskan nama lengkap Anda.' : (isSupervisor ? 'Contoh: Pilih supervisor untuk menerima permintaan approval.' : (isVerification ? 'Contoh: Apakah seluruh kontrol keselamatan telah dilakukan?' : 'Contoh: Apakah pelindung mesin terpasang dengan baik?')));
                     const responseFields = isSelect
-                        ? `<div class="field"><label>Opsi jawaban (satu opsi per baris, minimal 1)</label><textarea name="question_options[]" maxlength="2500" required placeholder="Contoh:&#10;Baik&#10;Perlu perhatian&#10;Tidak aman"></textarea><span class="help">Minimal 1, maksimal 20 opsi; masing-masing maksimal 120 karakter.</span></div><input type="hidden" name="followup_text[]" value=""><input type="file" name="followup_image[]" hidden>`
+                        ? `<div class="field"><label>Opsi jawaban (satu opsi per baris, minimal 1)</label><textarea name="question_options[]" maxlength="2500" required placeholder="Contoh:&#10;Baik&#10;Perlu perhatian&#10;Tidak aman"></textarea><span class="help">Minimal 1, maksimal 20 opsi; masing-masing maksimal 120 karakter.</span></div><input type="hidden" name="verification_message[]" value=""><input type="hidden" name="followup_text[]" value=""><input type="file" name="followup_image[]" hidden>`
+                        : (isVerification
+                            ? `<div class="field"><label>Pesan peringatan saat jawaban Tidak</label><textarea name="verification_message[]" maxlength="500" required placeholder="Contoh: Pastikan alasan dan tindakan yang diperlukan dipilih sebelum mengirim."></textarea></div><div class="field"><label>Opsi verifikasi (satu opsi per baris, minimal 1)</label><textarea name="question_options[]" maxlength="2500" required placeholder="Contoh:&#10;Belum dilakukan&#10;Ada kendala&#10;Perlu tindak lanjut"></textarea><span class="help">Saat responden memilih Tidak, pesan dan daftar pilihan ini muncul dalam pop-up. Pilihan wajib diisi sebelum checklist dapat dikirim.</span></div><input type="hidden" name="followup_text[]" value=""><input type="file" name="followup_image[]" hidden>`
                         : (isText || isSupervisor
-                            ? `<input type="hidden" name="question_options[]" value=""><input type="hidden" name="followup_text[]" value=""><input type="file" name="followup_image[]" hidden>`
-                            : `<input type="hidden" name="question_options[]" value=""><input type="hidden" name="followup_text[]" value=""><div class="field" style="margin-bottom:0"><label>Gambar pendukung pertanyaan lanjutan (opsional)</label><input type="file" name="followup_image[]" accept="image/jpeg,image/png,image/webp"><span class="help">JPG, PNG, WEBP · Maksimal 4 MB.</span></div><div class="followup-choice-builder"><div class="question-builder-head" style="margin-top:14px"><strong>Pertanyaan lanjutan pilihan</strong><button class="btn btn-light btn-small add-followup-choice" type="button">＋ Tambah pertanyaan pilihan</button></div><div class="followup-choice-list"></div><span class="help">Minimal satu pertanyaan pilihan wajib dibuat. Semua pertanyaan pilihan ini hanya tampil jika responden menjawab Ya.</span></div>`);
+                            ? `<input type="hidden" name="question_options[]" value=""><input type="hidden" name="verification_message[]" value=""><input type="hidden" name="followup_text[]" value=""><input type="file" name="followup_image[]" hidden>`
+                            : `<input type="hidden" name="question_options[]" value=""><input type="hidden" name="verification_message[]" value=""><input type="hidden" name="followup_text[]" value=""><div class="field" style="margin-bottom:0"><label>Gambar pendukung pertanyaan lanjutan (opsional)</label><input type="file" name="followup_image[]" accept="image/jpeg,image/png,image/webp"><span class="help">JPG, PNG, WEBP · Maksimal 4 MB.</span></div><div class="followup-choice-builder"><div class="question-builder-head" style="margin-top:14px"><strong>Pertanyaan lanjutan pilihan</strong><button class="btn btn-light btn-small add-followup-choice" type="button">＋ Tambah pertanyaan pilihan</button></div><div class="followup-choice-list"></div><span class="help">Minimal satu pertanyaan pilihan wajib dibuat. Semua pertanyaan pilihan ini hanya tampil jika responden menjawab Ya.</span></div>`));
                     block.innerHTML = `<div class="question-builder-head"><strong>Pertanyaan ${String(index + 1).padStart(2, '0')} · ${typeLabel}</strong><button class="btn btn-danger btn-small remove-question" type="button">Hapus</button></div><input type="hidden" name="question_type[]" value="${type}"><input type="hidden" name="question_original_index[]" value="${originalIndex}"><div class="field"><label>${questionLabel}</label><textarea name="question_text[]" maxlength="500" required placeholder="${questionExample}"></textarea></div>${isSupervisor ? '<span class="help">Opsi supervisor diambil dari akun ber-role Supervisor. Hasil form dan permintaan approval dikirim ke alamat email yang dipilih.</span>' : ''}<div class="field"><label>Gambar pendukung (opsional)</label><input type="file" name="question_image[]" accept="image/jpeg,image/png,image/webp"><span class="help">JPG, PNG, WEBP · Maksimal 4 MB.</span></div>${responseFields}`;
                     block.querySelector('.remove-question').addEventListener('click', () => {
                         block.remove();
                         [...list.children].forEach((item, position) => {
                             const itemType = item.querySelector('input[name="question_type[]"]').value;
-                            const label = itemType === 'select' ? 'Pilihan tunggal' : (itemType === 'text' ? 'Isian teks' : (itemType === 'supervisor' ? 'Email supervisor approval' : 'Ya/Tidak + pilihan lanjutan'));
+                            const label = itemType === 'select' ? 'Pilihan tunggal' : (itemType === 'text' ? 'Isian teks' : (itemType === 'supervisor' ? 'Email supervisor approval' : (itemType === 'verification' ? 'Verifikasi Ya/Tidak' : 'Ya/Tidak + pilihan lanjutan')));
                             item.querySelector('.question-builder-head strong').textContent = `Pertanyaan ${String(position + 1).padStart(2, '0')} · ${label}`;
                             item.querySelectorAll('[data-followup-kind]').forEach((field) => {
                                 field.name = `followup_choice_${field.dataset.followupKind}[${position}][]`;
@@ -949,6 +1010,10 @@ $csrf = h($_SESSION['csrf']);
                         if (options) {
                             options.value = (initialQuestion.options || []).join('\n');
                         }
+                        const verificationMessage = block.querySelector('textarea[name="verification_message[]"]');
+                        if (verificationMessage) {
+                            verificationMessage.value = initialQuestion.verificationMessage || '';
+                        }
                         const followup = block.querySelector('textarea[name="followup_text[]"]');
                         if (followup) {
                             followup.value = initialQuestion.followup || '';
@@ -990,6 +1055,7 @@ $csrf = h($_SESSION['csrf']);
                     }
                 };
                 addYesNoButton.addEventListener('click', () => addQuestion('yes_no'));
+                addVerificationButton.addEventListener('click', () => addQuestion('verification'));
                 addSelectButton.addEventListener('click', () => addQuestion('select'));
                 addTextButton.addEventListener('click', () => addQuestion('text'));
                 addSupervisorButton.addEventListener('click', () => addQuestion('supervisor'));
@@ -1002,6 +1068,45 @@ $csrf = h($_SESSION['csrf']);
                 }
             }
             document.querySelectorAll('[data-question]').forEach((card) => {
+                if (card.dataset.type === 'verification') {
+                    const dialog = card.querySelector('.verification-dialog');
+                    const select = dialog.querySelector('.verification-answer');
+                    const confirmButton = dialog.querySelector('.verification-confirm');
+                    const closeDialog = () => {
+                        if (dialog.open) {
+                            dialog.close();
+                        }
+                    };
+                    const updateConfirmButton = () => {
+                        confirmButton.disabled = select.value === '';
+                    };
+                    select.addEventListener('change', updateConfirmButton);
+                    confirmButton.addEventListener('click', () => {
+                        if (select.value !== '') {
+                            dialog.close();
+                        }
+                    });
+                    dialog.querySelectorAll('[data-close-verification]').forEach((button) => {
+                        button.addEventListener('click', closeDialog);
+                    });
+                    card.querySelectorAll('input[type="radio"]').forEach((radio) => {
+                        radio.addEventListener('change', () => {
+                            const isNo = card.querySelector('input[type="radio"]:checked').value === 'Tidak';
+                            select.disabled = !isNo;
+                            if (!isNo) {
+                                select.value = '';
+                                updateConfirmButton();
+                                closeDialog();
+                                return;
+                            }
+                            updateConfirmButton();
+                            if (!dialog.open) {
+                                dialog.showModal();
+                            }
+                        });
+                    });
+                    return;
+                }
                 if (card.dataset.type !== 'yes_no') {
                     return;
                 }
@@ -1030,7 +1135,7 @@ $csrf = h($_SESSION['csrf']);
                 return;
             }
 
-            let isHidden = false;
+            let isHidden = window.matchMedia('(max-width: 900px)').matches;
             const updateSidebar = () => {
                 shell.classList.toggle('sidebar-hidden', isHidden);
                 toggleButtons.forEach((button) => {
@@ -1130,6 +1235,7 @@ $csrf = h($_SESSION['csrf']);
                 const title = questionBlock.querySelector('[name="question_text[]"]').value.trim();
                 const card = document.createElement('section');
                 card.className = 'question-card';
+                card.dataset.previewType = type;
                 const heading = document.createElement('div');
                 heading.className = 'question-title';
                 const number = document.createElement('span');
@@ -1139,7 +1245,7 @@ $csrf = h($_SESSION['csrf']);
                 const questionTitle = document.createElement('h3');
                 questionTitle.textContent = title || `Pertanyaan ${index + 1}`;
                 const hint = document.createElement('p');
-                hint.textContent = type === 'yes_no' ? 'Pilih Ya atau Tidak.' : (type === 'text' ? 'Isi jawaban teks.' : 'Pilih satu opsi.');
+                hint.textContent = type === 'yes_no' || type === 'verification' ? 'Pilih Ya atau Tidak.' : (type === 'text' ? 'Isi jawaban teks.' : 'Pilih satu opsi.');
                 textWrap.append(questionTitle, hint);
                 heading.append(number, textWrap);
                 card.appendChild(heading);
@@ -1166,6 +1272,74 @@ $csrf = h($_SESSION['csrf']);
                         : (optionsField?.value || '').split(/\r?\n/).map((value) => value.trim()).filter(Boolean);
                     const result = makeSelect(`preview-answer-${index}`, type === 'supervisor' ? 'Pilih supervisor approval' : 'Pilih satu jawaban', options, type === 'supervisor' ? 'Pilih supervisor' : 'Pilih jawaban');
                     card.appendChild(result.field);
+                } else if (type === 'verification') {
+                    const choices = document.createElement('div');
+                    choices.className = 'answer-choice';
+                    const groupName = `preview-answer-${index}`;
+                    const dialog = document.createElement('dialog');
+                    dialog.className = 'verification-dialog';
+                    const dialogHead = document.createElement('div');
+                    dialogHead.className = 'verification-dialog-head';
+                    const icon = document.createElement('span');
+                    icon.className = 'verification-icon';
+                    icon.textContent = '!';
+                    const messageWrap = document.createElement('div');
+                    const dialogTitle = document.createElement('h2');
+                    dialogTitle.textContent = 'Peringatan verifikasi';
+                    const message = document.createElement('p');
+                    message.textContent = questionBlock.querySelector('[name="verification_message[]"]').value.trim();
+                    messageWrap.append(dialogTitle, message);
+                    const closeButton = document.createElement('button');
+                    closeButton.type = 'button';
+                    closeButton.className = 'btn btn-light btn-small';
+                    closeButton.textContent = 'Tutup';
+                    closeButton.addEventListener('click', () => dialog.close());
+                    dialogHead.append(icon, messageWrap, closeButton);
+
+                    const optionsText = questionBlock.querySelector('[name="question_options[]"]').value;
+                    const options = optionsText.split(/\r?\n/).map((value) => value.trim()).filter(Boolean);
+                    const result = makeSelect(`preview-verification-${index}`, 'Pilih alasan / tindak lanjut', options, 'Pilih salah satu opsi');
+                    result.select.classList.add('verification-answer');
+                    result.select.disabled = true;
+                    const confirmButton = document.createElement('button');
+                    confirmButton.type = 'button';
+                    confirmButton.className = 'btn btn-primary verification-confirm';
+                    confirmButton.textContent = 'Konfirmasi pilihan';
+                    confirmButton.disabled = true;
+                    result.select.addEventListener('change', () => {
+                        confirmButton.disabled = result.select.value === '';
+                    });
+                    confirmButton.addEventListener('click', () => {
+                        if (result.select.value !== '') {
+                            dialog.close();
+                        }
+                    });
+                    dialog.append(dialogHead, result.field, confirmButton);
+                    ['Ya', 'Tidak'].forEach((value) => {
+                        const label = document.createElement('label');
+                        label.className = 'choice';
+                        const radio = document.createElement('input');
+                        radio.type = 'radio';
+                        radio.name = groupName;
+                        radio.value = value;
+                        radio.required = true;
+                        radio.addEventListener('change', () => {
+                            const isNo = radio.value === 'Tidak';
+                            result.select.disabled = !isNo;
+                            if (!isNo) {
+                                result.select.value = '';
+                                confirmButton.disabled = true;
+                                if (dialog.open) {
+                                    dialog.close();
+                                }
+                            } else if (!dialog.open) {
+                                dialog.showModal();
+                            }
+                        });
+                        label.append(radio, document.createTextNode(value));
+                        choices.appendChild(label);
+                    });
+                    card.append(choices, dialog);
                 } else {
                     const choices = document.createElement('div');
                     choices.className = 'answer-choice';
@@ -1268,6 +1442,14 @@ $csrf = h($_SESSION['csrf']);
             });
             responseForm.addEventListener('submit', (event) => {
                 event.preventDefault();
+                const missingVerification = [...questionsTarget.querySelectorAll('[data-preview-type="verification"]')].find((card) => {
+                    const selected = card.querySelector('input[type="radio"]:checked');
+                    return selected?.value === 'Tidak' && !card.querySelector('.verification-answer').value;
+                });
+                if (missingVerification) {
+                    missingVerification.querySelector('.verification-dialog').showModal();
+                    return;
+                }
                 if (!responseForm.reportValidity()) {
                     return;
                 }
@@ -1277,6 +1459,18 @@ $csrf = h($_SESSION['csrf']);
             });
         })();
         function validateChecklist(form) {
+            const missingVerification = [...form.querySelectorAll('[data-question][data-type="verification"]')].find((card) => {
+                const selected = card.querySelector('input[type="radio"]:checked');
+                return selected?.value === 'Tidak' && !card.querySelector('.verification-answer').value;
+            });
+            if (missingVerification) {
+                const dialog = missingVerification.querySelector('.verification-dialog');
+                if (!dialog.open) {
+                    dialog.showModal();
+                }
+                return false;
+            }
+
             const missing = [...form.querySelectorAll('[data-question]')].some((card) => {
                 if (card.dataset.type === 'select' || card.dataset.type === 'supervisor') {
                     return !card.querySelector('select[name^="answer"]').value;
@@ -1299,7 +1493,7 @@ $csrf = h($_SESSION['csrf']);
                 return !legacyFollowup || !legacyFollowup.value.trim();
             });
             if (missing) {
-                alert('Lengkapi semua jawaban dan pertanyaan lanjutan untuk jawaban Ya.');
+                alert('Lengkapi semua jawaban checklist dan pilihan verifikasi yang diwajibkan.');
                 return false;
             }
             return true;
