@@ -572,34 +572,24 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 'emailStatus' => 'Belum dikirim',
             ];
             $data['submissions'][] = $submission;
-            $emailBody = "Hasil checklist baru\n\nForm: {$form['title']}\nResponden: {$currentUser['name']}\nEmail responden: {$email}\nWaktu: " . date('d F Y, H:i:s') . " WIB\n\n";
-            foreach ($answers as $number => $answer) {
-                $emailBody .= ($number + 1) . ". {$answer['question']}\nJawaban: {$answer['choice']}\n";
-                if (($answer['type'] ?? 'yes_no') === 'supervisor') {
-                    $emailBody .= "Email tujuan approval: {$answer['choice']}\n";
-                } elseif (($answer['type'] ?? 'yes_no') === 'verification' && $answer['choice'] === 'Tidak') {
-                    $emailBody .= "Peringatan: {$answer['verificationMessage']}\nPilihan verifikasi: {$answer['verificationAnswer']}\n";
-                } elseif (($answer['type'] ?? 'yes_no') === 'yes_no' && $answer['choice'] === 'Ya') {
-                    if (($answer['followup'] ?? '') !== '') {
-                        $emailBody .= "{$answer['followup']}\nJawaban lanjutan: {$answer['followupAnswer']}\n";
-                    }
-                    foreach ($answer['followupChoiceAnswers'] ?? [] as $followupChoiceAnswer) {
-                        $emailBody .= "{$followupChoiceAnswer['question']}\nJawaban pilihan: {$followupChoiceAnswer['choice']}\n";
-                    }
-                }
-                $emailBody .= "\n";
+            $mailSent = false;
+            $mailError = '';
+            try {
+                require_once __DIR__ . DIRECTORY_SEPARATOR . 'send_approval_email.php';
+                sendCccApprovalEmail($submission);
+                $mailSent = true;
+            } catch (Throwable $exception) {
+                $mailError = $exception->getMessage();
+                error_log('CCC approval email failed: ' . $mailError);
             }
-            $mailSent = mail(
-                $supervisor['email'],
-                'Permintaan approval checklist: ' . $form['title'],
-                $emailBody,
-                ['From' => 'CCC Checklist <noreply@localhost>', 'Content-Type' => 'text/plain; charset=UTF-8']
-            );
-            $data['submissions'][array_key_last($data['submissions'])]['emailStatus'] = $mailSent ? 'Terkirim' : 'Gagal — periksa konfigurasi PHP mail';
+            $emailStatus = $mailSent ? 'Terkirim' : 'Gagal — ' . $mailError;
+            $data['submissions'][array_key_last($data['submissions'])]['emailStatus'] = function_exists('mb_substr')
+                ? mb_substr($emailStatus, 0, 160, 'UTF-8')
+                : substr($emailStatus, 0, 160);
             saveData($dataFile, $data);
             setFlash($mailSent ? 'success' : 'warning', $mailSent
                 ? 'Form berhasil dikirim dan notifikasi email telah diteruskan ke supervisor.'
-                : 'Form berhasil disimpan, tetapi email gagal dikirim. Periksa konfigurasi SMTP/sendmail pada PHP/XAMPP.');
+                : 'Form tersimpan, tetapi email gagal dikirim: ' . $mailError);
             redirectTo('page=my-submissions');
         }
 
