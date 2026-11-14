@@ -294,7 +294,18 @@ try {
 
 if (isset($_GET['media'])) {
     $filename = (string) $_GET['media'];
-    if (!isset($_SESSION['user']) || !preg_match('/^[a-f0-9]{32}\.(jpg|png|webp)$/', $filename)) {
+    $isPublicFormMedia = false;
+    if (!isset($_SESSION['user'])) {
+        foreach ($data['forms'] as $form) {
+            foreach ($form['questions'] as $question) {
+                if (($question['image'] ?? '') === $filename || ($question['followupImage'] ?? '') === $filename) {
+                    $isPublicFormMedia = true;
+                    break 2;
+                }
+            }
+        }
+    }
+    if ((!isset($_SESSION['user']) && !$isPublicFormMedia) || !preg_match('/^[a-f0-9]{32}\.(jpg|png|webp)$/', $filename)) {
         http_response_code(404);
         exit;
     }
@@ -319,16 +330,6 @@ if (!isset($_SESSION['csrf'])) {
     $_SESSION['csrf'] = bin2hex(random_bytes(32));
 }
 
-if (!isset($_SESSION['user']) && ($_GET['page'] ?? '') === 'fill') {
-    $requestedFormId = (string) ($_GET['form'] ?? '');
-    foreach ($data['forms'] as $form) {
-        if ($form['id'] === $requestedFormId) {
-            $_SESSION['return_to'] = 'page=fill&form=' . rawurlencode($requestedFormId);
-            break;
-        }
-    }
-}
-
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     requireCsrf();
     $action = (string) ($_POST['action'] ?? '');
@@ -340,13 +341,11 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             if (!$user || !password_verify($password, $user['password'])) {
                 throw new RuntimeException('Nama pengguna atau kata sandi tidak sesuai.');
             }
-            $returnTo = $_SESSION['return_to'] ?? '';
-            unset($_SESSION['return_to']);
             session_regenerate_id(true);
             $_SESSION['user'] = $username;
             $_SESSION['csrf'] = bin2hex(random_bytes(32));
             setFlash('success', 'Selamat datang, ' . $user['name'] . '.');
-            redirectTo($user['role'] === 'Respondent' && preg_match('/^page=fill&form=[a-f0-9]{12}$/', $returnTo) ? $returnTo : '');
+            redirectTo();
         }
 
         if ($action === 'logout') {
@@ -357,12 +356,12 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             redirectTo();
         }
 
-        if (!isset($_SESSION['user']) || !isset($data['users'][$_SESSION['user']])) {
+        $currentUser = $data['users'][$_SESSION['user'] ?? ''] ?? null;
+        if (!$currentUser && $action !== 'submit_response') {
             throw new RuntimeException('Silakan masuk terlebih dahulu.');
         }
-        $currentUser = $data['users'][$_SESSION['user']];
 
-        if ($action === 'create_form' && $currentUser['role'] === 'Administrator') {
+        if ($action === 'create_form' && $currentUser && $currentUser['role'] === 'Administrator') {
             $title = trim((string) ($_POST['title'] ?? ''));
             $description = trim((string) ($_POST['description'] ?? ''));
             if ($title === '') {
@@ -386,7 +385,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             redirectTo('page=forms');
         }
 
-        if ($action === 'update_form' && $currentUser['role'] === 'Administrator') {
+        if ($action === 'update_form' && $currentUser && $currentUser['role'] === 'Administrator') {
             $formId = (string) ($_POST['form_id'] ?? '');
             $formIndex = null;
             foreach ($data['forms'] as $index => $form) {
@@ -419,7 +418,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             redirectTo('page=forms');
         }
 
-        if ($action === 'delete_form' && $currentUser['role'] === 'Administrator') {
+        if ($action === 'delete_form' && $currentUser && $currentUser['role'] === 'Administrator') {
             $formId = (string) ($_POST['form_id'] ?? '');
             $formIndex = null;
             foreach ($data['forms'] as $index => $form) {
@@ -437,7 +436,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             redirectTo('page=forms');
         }
 
-        if ($action === 'create_user' && $currentUser['role'] === 'Administrator') {
+        if ($action === 'create_user' && $currentUser && $currentUser['role'] === 'Administrator') {
             $username = strtolower(trim((string) ($_POST['new_username'] ?? '')));
             $name = trim((string) ($_POST['new_name'] ?? ''));
             $email = trim((string) ($_POST['new_email'] ?? ''));
@@ -461,7 +460,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             redirectTo('page=users');
         }
 
-        if ($action === 'submit_response' && $currentUser['role'] === 'Respondent') {
+        if ($action === 'submit_response') {
             $formId = (string) ($_POST['form_id'] ?? '');
             $form = null;
             foreach ($data['forms'] as $candidate) {
@@ -473,7 +472,13 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             if (!$form) {
                 throw new RuntimeException('Form checklist tidak ditemukan.');
             }
+            $respondentName = $currentUser && $currentUser['role'] === 'Respondent'
+                ? $currentUser['name']
+                : trim((string) ($_POST['respondent_name'] ?? ''));
             $email = trim((string) ($_POST['respondent_email'] ?? ''));
+            if ($respondentName === '' || (function_exists('mb_strlen') ? mb_strlen($respondentName, 'UTF-8') : strlen($respondentName)) > 100) {
+                throw new RuntimeException('Nama responden wajib diisi dan maksimal 100 karakter.');
+            }
             $supervisorQuestionIndex = null;
             foreach ($form['questions'] as $index => $question) {
                 if (($question['type'] ?? 'yes_no') !== 'supervisor') {
@@ -559,7 +564,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 'id' => bin2hex(random_bytes(8)),
                 'formId' => $form['id'],
                 'formTitle' => $form['title'],
-                'respondent' => $currentUser['name'],
+                'respondent' => $respondentName,
                 'respondentEmail' => $email,
                 'supervisor' => $supervisorUsername,
                 'supervisorName' => $supervisor['name'],
@@ -590,10 +595,10 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             setFlash($mailSent ? 'success' : 'warning', $mailSent
                 ? 'Form berhasil dikirim dan notifikasi email telah diteruskan ke supervisor.'
                 : 'Form tersimpan, tetapi email gagal dikirim: ' . $mailError);
-            redirectTo('page=my-submissions');
+            redirectTo($currentUser && $currentUser['role'] === 'Respondent' ? 'page=my-submissions' : 'page=submitted');
         }
 
-        if ($action === 'approve' && in_array($currentUser['role'], ['Administrator', 'Supervisor'], true)) {
+        if ($action === 'approve' && $currentUser && in_array($currentUser['role'], ['Administrator', 'Supervisor'], true)) {
             $submissionId = (string) ($_POST['submission_id'] ?? '');
             foreach ($data['submissions'] as &$submission) {
                 if ($submission['id'] !== $submissionId) {
@@ -622,6 +627,11 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         throw new RuntimeException('Aksi tidak tersedia atau Anda tidak memiliki izin.');
     } catch (Throwable $exception) {
         setFlash('error', $exception->getMessage());
+        $failedPublicFormId = (string) ($_POST['form_id'] ?? '');
+        $failedAccount = $data['users'][$_SESSION['user'] ?? ''] ?? null;
+        if ($action === 'submit_response' && (!$failedAccount || $failedAccount['role'] !== 'Respondent') && preg_match('/^[a-f0-9]{12}$/', $failedPublicFormId)) {
+            redirectTo('page=fill&form=' . rawurlencode($failedPublicFormId));
+        }
         redirectTo();
     }
 }
@@ -667,6 +677,8 @@ $formHasSupervisorQuestion = $selectedForm !== null && count(array_filter(
     $selectedForm['questions'],
     static fn(array $question): bool => ($question['type'] ?? 'yes_no') === 'supervisor'
 )) > 0;
+$publicFormRequest = !$user && $page === 'fill' && $selectedForm !== null;
+$publicSubmissionComplete = $page === 'submitted';
 $csrf = h($_SESSION['csrf']);
 ?>
 <!doctype html>
@@ -686,6 +698,7 @@ $csrf = h($_SESSION['csrf']);
         .sidebar{transition:transform .2s ease}.shell.sidebar-hidden .sidebar{transform:translateX(-100%)}.shell.sidebar-hidden .main{margin-left:0}.sidebar-brand-row{display:flex;align-items:center;gap:5px}.sidebar-brand-row .brand{flex:1;min-width:0}.sidebar-toggle-side{color:#d7e0eb;background:#263244;border:1px solid #37465b;padding:6px 9px}.sidebar-toggle-side:hover{background:#37465b}.topbar{justify-content:flex-start;gap:16px}.topbar-left{display:flex;align-items:center;gap:12px;min-width:0}.sidebar-toggle{flex:none;padding:8px 11px}.crumb{white-space:nowrap}.top-actions{margin-left:auto}.profile{align-items:stretch;flex-direction:column;gap:12px}.profile-user{display:flex;align-items:center;gap:10px;min-width:0}.logout-form{width:100%}.logout-button{width:100%;background:#263244;color:#fff;justify-content:flex-start;padding:9px 11px}.logout-button:hover{background:#37465b}
         .verification-dialog{width:min(500px,calc(100% - 28px));border:1px solid var(--line);border-radius:14px;padding:22px;background:#fff;color:var(--ink);box-shadow:var(--shadow)}.verification-dialog::backdrop{background:rgba(17,24,39,.58);backdrop-filter:blur(3px)}.verification-dialog-head{display:flex;align-items:flex-start;gap:12px;margin-bottom:16px}.verification-dialog-head>div{flex:1}.verification-dialog-head h2{font-size:17px;margin:0 0 5px}.verification-dialog-head p{font-size:12px;color:var(--muted);margin:0}.verification-icon{width:30px;height:30px;flex:none;border-radius:50%;display:grid;place-items:center;background:#fff3dc;color:#9b6400;font-weight:900}.verification-dialog .field{margin-bottom:13px}.verification-confirm:disabled{opacity:.5;cursor:not-allowed}
         .password-control{position:relative}.password-control input{padding-right:48px}.password-visibility{position:absolute;right:7px;top:50%;transform:translateY(-50%);display:grid;place-items:center;width:34px;height:34px;border:0;background:transparent;color:var(--muted);padding:7px;border-radius:6px}.password-visibility:hover{background:var(--mint);color:var(--accent)}.password-visibility:focus-visible{outline:2px solid var(--accent);outline-offset:2px}.password-visibility svg{width:18px;height:18px;fill:none;stroke:currentColor;stroke-width:1.8;stroke-linecap:round;stroke-linejoin:round}.password-visibility [hidden]{display:none}
+        .public-shell .main{margin-left:0}.public-shell .topbar{padding:0 24px}.public-shell .brand{padding:0}
         @media(max-width:900px){.shell:not(.sidebar-hidden)::before{content:"";position:fixed;inset:0;background:rgba(17,24,39,.42);z-index:2}.sidebar{width:254px;padding:20px 18px;transform:translateX(-100%)}.shell:not(.sidebar-hidden) .sidebar{transform:translateX(0)}.shell.sidebar-hidden .sidebar{transform:translateX(-100%)}.main,.shell.sidebar-hidden .main{margin-left:0}.topbar{position:sticky;z-index:5;padding:0 20px}.topbar-toggle,.shell:not(.sidebar-hidden) .topbar-toggle{visibility:visible}.content{width:100%;padding:26px 20px 44px}.table-wrap{max-width:100%;overflow-x:auto;-webkit-overflow-scrolling:touch}.panel-head{flex-wrap:wrap;align-items:flex-start}.panel-head>.btn{flex:none}.login-page{grid-template-columns:1fr}.login-aside{min-height:245px;padding:24px}.login-copy{margin:37px 0 12px}.login-copy h1{font-size:32px}.login-footer{display:none}.login-form-side{padding:34px 23px}}
         @media(max-width:600px){body{font-size:14px}.topbar{min-height:58px;height:auto;padding:9px 13px;gap:8px}.topbar-left{gap:8px}.topbar-toggle{padding:8px 10px}.crumb{overflow:hidden;text-overflow:ellipsis}.top-actions{gap:7px}.content{padding:22px 13px 36px}.page-heading{gap:13px;margin-bottom:20px}.page-heading h1{font-size:22px}.page-heading>.btn{max-width:100%;white-space:normal}.cards{grid-template-columns:repeat(2,minmax(0,1fr));gap:9px}.stat-card{padding:12px}.stat-top{gap:6px}.stat-number{font-size:22px}.panel{padding:14px;border-radius:11px}.form-grid{grid-template-columns:minmax(0,1fr);gap:0}.field input,.field textarea,.field select{min-height:44px;font-size:16px}.field textarea{min-height:88px}.btn{min-height:40px}.btn-small{min-height:38px}.question-card{padding:13px}.question-title{gap:9px}.answer-choice{flex-wrap:wrap;gap:8px}.choice{min-height:42px;padding:9px 12px}.question-image,.preview-dialog .question-image{max-width:100%;margin-left:0}.panel-head{gap:10px}.panel-head>div{min-width:0}.panel-head>.btn{white-space:nowrap}.qr-area{width:100%;align-items:flex-start;flex-direction:column}.qr-area img{max-width:min(100%,180px);height:auto}.form-link{max-width:100%;overflow-wrap:anywhere}.preview-dialog,.verification-dialog{width:calc(100% - 20px);max-height:calc(100% - 20px);padding:16px}.preview-dialog-head{gap:10px}.preview-dialog-head h2{font-size:18px}.login-page{min-height:100vh;min-height:100dvh}.login-form-side{padding:28px 20px}.login-aside{min-height:220px}.password-visibility{width:40px;height:40px}.password-control input{padding-right:52px}}
         @media(max-width:380px){.cards{grid-template-columns:minmax(0,1fr)}.stat-card{padding:14px}.top-actions .muted{display:none}.content{padding-right:11px;padding-left:11px}.topbar{padding-right:10px;padding-left:10px}.page-heading h1{font-size:20px}.panel{padding:12px}}
@@ -693,7 +706,7 @@ $csrf = h($_SESSION['csrf']);
     </style>
 </head>
 <body>
-<?php if (!$user): ?>
+<?php if (!$user && !$publicFormRequest && !$publicSubmissionComplete): ?>
     <main class="login-page">
         <section class="login-aside">
             <div class="brand"><div class="brand-mark">C</div><div class="brand-name">CRITICAL CONTROL<span>CHECKLIST SYSTEM</span></div></div>
@@ -732,7 +745,7 @@ $csrf = h($_SESSION['csrf']);
         })();
     </script>
 <?php else:
-    $role = $user['role'];
+    $role = $user['role'] ?? 'Public';
     $pageTitles = ['dashboard' => 'Dashboard', 'forms' => 'Form checklist', 'edit-form' => 'Edit form', 'users' => 'Pengguna', 'my-submissions' => 'Riwayat pengisian', 'fill' => 'Isi checklist'];
     $pageTitle = $pageTitles[$page] ?? 'Dashboard';
     $navItems = [];
@@ -749,7 +762,8 @@ $csrf = h($_SESSION['csrf']);
     $navItems[] = ['my-submissions', '◷', $role === 'Respondent' ? 'Riwayat saya' : 'Riwayat checklist'];
     $pendingCount = count(array_filter($visibleSubmissions, static fn(array $submission): bool => $submission['status'] === 'Menunggu approval'));
 ?>
-    <div class="shell" id="app-shell">
+    <div class="shell<?= $user ? '' : ' public-shell' ?>" id="app-shell">
+        <?php if ($user): ?>
         <aside class="sidebar" id="app-sidebar">
             <div class="sidebar-brand-row"><a class="brand" href="index.php"><div class="brand-mark">C</div><div class="brand-name">CRITICAL CONTROL<span>CHECKLIST SYSTEM</span></div></a><button type="button" class="sidebar-toggle sidebar-toggle-side" aria-label="Sembunyikan sidebar" title="Sembunyikan sidebar" aria-controls="app-sidebar" aria-expanded="true">‹</button></div>
             <div class="nav-label">Workspace</div>
@@ -760,14 +774,22 @@ $csrf = h($_SESSION['csrf']);
                 <form method="post" class="logout-form"><input type="hidden" name="csrf" value="<?= $csrf ?>"><input type="hidden" name="action" value="logout"><button title="Log out" class="btn btn-small logout-button" type="submit"><span aria-hidden="true">↗</span> Log out</button></form>
             </div>
         </aside>
+        <?php endif; ?>
         <main class="main">
-            <header class="topbar"><div class="topbar-left"><button type="button" class="btn btn-light sidebar-toggle topbar-toggle" aria-label="Tampilkan sidebar" title="Tampilkan / sembunyikan sidebar" aria-controls="app-sidebar" aria-expanded="true">☰</button><div class="crumb">CCC <span style="padding:0 7px;color:#aeb8c4">/</span> <b><?= h($pageTitle) ?></b></div></div><div class="top-actions"><span class="badge"><?= h($role) ?></span><span class="muted" style="font-size:11px"><?= date('d M Y') ?></span></div></header>
+            <header class="topbar"><?php if ($user): ?><div class="topbar-left"><button type="button" class="btn btn-light sidebar-toggle topbar-toggle" aria-label="Tampilkan sidebar" title="Tampilkan / sembunyikan sidebar" aria-controls="app-sidebar" aria-expanded="true">☰</button><div class="crumb">CCC <span style="padding:0 7px;color:#aeb8c4">/</span> <b><?= h($pageTitle) ?></b></div></div><div class="top-actions"><span class="badge"><?= h($role) ?></span><span class="muted" style="font-size:11px"><?= date('d M Y') ?></span></div><?php else: ?><a class="brand" href="index.php"><div class="brand-mark">C</div><div class="brand-name">CRITICAL CONTROL<span>CHECKLIST SYSTEM</span></div></a><?php endif; ?></header>
             <div class="content">
                 <?php if ($flash): ?><div class="alert <?= h($flash['type']) ?>"><?= h($flash['message']) ?></div><?php endif; ?>
 
-                <?php if ($page === 'fill' && $selectedForm && $role === 'Respondent'): ?>
+                <?php if ($page === 'submitted' && !$user): ?>
+                    <section class="panel" style="max-width:680px;margin:50px auto;text-align:center;padding:36px 24px">
+                        <div class="stat-icon" style="width:48px;height:48px;margin:0 auto 15px;font-size:22px">✓</div>
+                        <div class="eyebrow">Checklist terkirim</div>
+                        <h1 style="font-size:24px;margin:8px 0">Terima kasih</h1>
+                        <p class="muted" style="margin:0">Hasil checklist Anda sudah direkam dan diteruskan ke supervisor untuk proses approval.</p>
+                    </section>
+                <?php elseif ($page === 'fill' && $selectedForm): ?>
                     <div class="fill-container">
-                        <div style="margin-bottom:16px"><a class="muted" href="index.php" style="font-size:11px">← Kembali ke daftar form</a></div>
+                        <?php if ($user): ?><div style="margin-bottom:16px"><a class="muted" href="index.php" style="font-size:11px">← Kembali ke daftar form</a></div><?php endif; ?>
                         <div class="form-intro">
                             <?php if (($selectedForm['logo'] ?? '') !== ''): ?><img class="company-logo" src="<?= h(mediaUrl($selectedForm['logo'])) ?>" alt="Logo perusahaan"><?php endif; ?>
                             <div class="eyebrow">Critical control checklist</div><h1><?= h($selectedForm['title']) ?></h1><p><?= h($selectedForm['description']) ?></p>
@@ -775,8 +797,9 @@ $csrf = h($_SESSION['csrf']);
                         <form method="post" class="panel" style="padding:19px" onsubmit="return validateChecklist(this)">
                             <input type="hidden" name="csrf" value="<?= $csrf ?>"><input type="hidden" name="action" value="submit_response"><input type="hidden" name="form_id" value="<?= h($selectedForm['id']) ?>">
                             <div class="form-grid">
+                                <?php if (!$user || $role !== 'Respondent'): ?><div class="field"><label for="respondent_name">Nama lengkap <span style="color:#b42318">*</span></label><input type="text" id="respondent_name" name="respondent_name" required autocomplete="name" maxlength="100" placeholder="Masukkan nama lengkap"></div><?php endif; ?>
                                 <div class="field"><label for="respondent_email">Email responden <span style="color:#b42318">*</span></label><input type="email" id="respondent_email" name="respondent_email" required autocomplete="email" maxlength="254" placeholder="nama@perusahaan.com"><span class="help">Wajib diisi. Email ini akan disimpan bersama hasil checklist dan ditampilkan di dashboard.</span></div>
-                                <?php if (!$formHasSupervisorQuestion): ?><div class="field"><label for="supervisor">Kirim hasil kepada supervisor <span style="color:#b42318">*</span></label><select id="supervisor" name="supervisor" required><option value="">Pilih supervisor</option><?php foreach ($supervisors as $supervisor): ?><option value="<?= h($supervisor['username']) ?>"><?= h($supervisor['name']) ?> · <?= h($supervisor['email']) ?></option><?php endforeach; ?></select></div><?php endif; ?>
+                                <?php if (!$formHasSupervisorQuestion): ?><div class="field"><label for="supervisor">Kirim hasil kepada supervisor <span style="color:#b42318">*</span></label><select id="supervisor" name="supervisor" required><option value="">Pilih supervisor</option><?php foreach ($supervisors as $supervisor): ?><option value="<?= h($supervisor['username']) ?>"><?= h($supervisor['name']) ?></option><?php endforeach; ?></select></div><?php endif; ?>
                             </div>
                             <?php foreach ($selectedForm['questions'] as $index => $question): ?>
                                 <?php $questionType = $question['type'] ?? 'yes_no'; ?>
@@ -788,7 +811,7 @@ $csrf = h($_SESSION['csrf']);
                                     <?php elseif ($questionType === 'text'): ?>
                                         <div class="field" style="margin:15px 0 0 41px"><label for="answer-<?= $index ?>">Jawaban teks <span style="color:#b42318">*</span></label><input class="answer-text" id="answer-<?= $index ?>" name="answer[<?= $index ?>]" type="text" maxlength="500" required placeholder="Contoh: tuliskan nama lengkap Anda"></div>
                                     <?php elseif ($questionType === 'supervisor'): ?>
-                                        <div class="field" style="margin:15px 0 0 41px"><label for="answer-<?= $index ?>">Email supervisor tujuan approval <span style="color:#b42318">*</span></label><select class="answer-select" id="answer-<?= $index ?>" name="answer[<?= $index ?>]" required><option value="">Pilih supervisor</option><?php foreach ($supervisors as $supervisor): ?><option value="<?= h($supervisor['username']) ?>"><?= h($supervisor['name']) ?> · <?= h($supervisor['email']) ?></option><?php endforeach; ?></select></div>
+                                        <div class="field" style="margin:15px 0 0 41px"><label for="answer-<?= $index ?>">Supervisor tujuan approval <span style="color:#b42318">*</span></label><select class="answer-select" id="answer-<?= $index ?>" name="answer[<?= $index ?>]" required><option value="">Pilih supervisor</option><?php foreach ($supervisors as $supervisor): ?><option value="<?= h($supervisor['username']) ?>"><?= h($supervisor['name']) ?></option><?php endforeach; ?></select></div>
                                     <?php elseif ($questionType === 'verification'): ?>
                                         <div class="answer-choice">
                                             <label class="choice"><input type="radio" name="answer[<?= $index ?>]" value="Ya" required> Ya</label>
@@ -882,7 +905,7 @@ $csrf = h($_SESSION['csrf']);
                         <?php if (!$data['forms']): ?><div class="empty">Belum ada form.</div><?php endif; ?>
                         <?php foreach ($data['forms'] as $form):
                             $formUrl = (isset($_SERVER['HTTPS']) && $_SERVER['HTTPS'] !== 'off' ? 'https://' : 'http://') . ($_SERVER['HTTP_HOST'] ?? 'localhost') . dirname($_SERVER['SCRIPT_NAME']) . '/index.php?page=fill&form=' . rawurlencode($form['id']);
-                        ?><div class="panel" style="box-shadow:none;background:#fbfcfe;margin:12px 0;padding:16px"><div class="panel-head" style="margin:0 0 13px"><div><h3 class="panel-title"><?= h($form['title']) ?></h3><div class="panel-subtitle"><?= count($form['questions']) ?> pertanyaan · Dibuat <?= h(date('d M Y', strtotime($form['createdAt']))) ?></div></div><div style="display:flex;gap:7px;flex-wrap:wrap"><a class="btn btn-light btn-small" href="index.php?page=edit-form&amp;id=<?= h($form['id']) ?>">Edit</a><a class="btn btn-light btn-small" href="index.php?page=fill&amp;form=<?= h($form['id']) ?>" target="_blank" rel="noopener">Pratinjau</a><form method="post" onsubmit="return confirm('Hapus form ini dari daftar? Riwayat checklist yang sudah dikirim tetap tersimpan.')"><input type="hidden" name="csrf" value="<?= $csrf ?>"><input type="hidden" name="action" value="delete_form"><input type="hidden" name="form_id" value="<?= h($form['id']) ?>"><button class="btn btn-danger btn-small" type="submit">Hapus</button></form></div></div><div class="qr-area"><img loading="lazy" src="https://api.qrserver.com/v1/create-qr-code/?size=180x180&amp;data=<?= rawurlencode($formUrl) ?>" alt="QR code <?= h($form['title']) ?>"><div><div class="field-label">QR Code untuk dibagikan</div><p class="help">Pindai untuk membuka form. Responden harus masuk sebagai akun Responden.</p><div class="form-link"><?= h($formUrl) ?></div><a class="btn btn-light btn-small" style="margin-top:10px" href="https://api.qrserver.com/v1/create-qr-code/?size=600x600&amp;data=<?= rawurlencode($formUrl) ?>" target="_blank" rel="noopener">Buka / simpan QR</a></div></div></div><?php endforeach; ?>
+                        ?><div class="panel" style="box-shadow:none;background:#fbfcfe;margin:12px 0;padding:16px"><div class="panel-head" style="margin:0 0 13px"><div><h3 class="panel-title"><?= h($form['title']) ?></h3><div class="panel-subtitle"><?= count($form['questions']) ?> pertanyaan · Dibuat <?= h(date('d M Y', strtotime($form['createdAt']))) ?></div></div><div style="display:flex;gap:7px;flex-wrap:wrap"><a class="btn btn-light btn-small" href="index.php?page=edit-form&amp;id=<?= h($form['id']) ?>">Edit</a><a class="btn btn-light btn-small" href="index.php?page=fill&amp;form=<?= h($form['id']) ?>" target="_blank" rel="noopener">Pratinjau</a><form method="post" onsubmit="return confirm('Hapus form ini dari daftar? Riwayat checklist yang sudah dikirim tetap tersimpan.')"><input type="hidden" name="csrf" value="<?= $csrf ?>"><input type="hidden" name="action" value="delete_form"><input type="hidden" name="form_id" value="<?= h($form['id']) ?>"><button class="btn btn-danger btn-small" type="submit">Hapus</button></form></div></div><div class="qr-area"><img loading="lazy" src="https://api.qrserver.com/v1/create-qr-code/?size=180x180&amp;data=<?= rawurlencode($formUrl) ?>" alt="QR code <?= h($form['title']) ?>"><div><div class="field-label">QR Code untuk dibagikan</div><p class="help">Pindai untuk langsung membuka form tanpa login. Responden mengisi nama dan email sebelum mengirim.</p><div class="form-link"><?= h($formUrl) ?></div><a class="btn btn-light btn-small" style="margin-top:10px" href="https://api.qrserver.com/v1/create-qr-code/?size=600x600&amp;data=<?= rawurlencode($formUrl) ?>" target="_blank" rel="noopener">Buka / simpan QR</a></div></div></div><?php endforeach; ?>
                     </div>
                 <?php elseif ($page === 'users' && $role === 'Administrator'): ?>
                     <div class="page-heading"><div><div class="eyebrow">Access management</div><h1>Pengguna</h1><p>Kelola akun responden dan supervisor yang menerima notifikasi checklist.</p></div></div>
