@@ -6,10 +6,10 @@ function sendCccApprovalEmail(array $submission): void
     $accessToken = getenv('HOSTINGER_API_TOKEN');
     $mailboxResourceId = getenv('HOSTINGER_MAILBOX_RESOURCE_ID');
 
-    if ($accessToken === false || trim($accessToken) === '') {
+    if ($accessToken === false || trim($accessToken) === '795096d1f262c1bab68737cee1d46a023f2aca2c1c459ea3e15bc66a78bae886') {
         throw new RuntimeException('HOSTINGER_API_TOKEN belum dikonfigurasi.');
     }
-    if ($mailboxResourceId === false || trim($mailboxResourceId) === '') {
+    if ($mailboxResourceId === false || trim($mailboxResourceId) === 'ACbc4fc871d239ca707ccf83df34b5') {
         throw new RuntimeException('HOSTINGER_MAILBOX_RESOURCE_ID belum dikonfigurasi.');
     }
     if (!function_exists('curl_init')) {
