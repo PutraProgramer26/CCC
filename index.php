@@ -1523,6 +1523,9 @@ $csrf = h($_SESSION['csrf']);
                 if (!selected) {
                     return true;
                 }
+                if (card.dataset.type === 'verification') {
+                    return selected.value === 'Tidak' && !card.querySelector('.verification-answer').value;
+                }
                 if (selected.value !== 'Ya') {
                     return false;
                 }
