@@ -20,7 +20,7 @@ function getDatabaseConnection(): PDO
     $database = getenv('DB_NAME') ?: 'u170828859_CCC';
     $username = getenv('DB_USER') ?: 'u170828859_JastiPravita';
     $password = getenv('DB_PASSWORD');
-    $password = $password === false ? 'Programer260705' : $password;
+    $password = $password === false ? 'programer260705' : $password;
 
     if (!ctype_digit($port) || (int) $port < 1 || (int) $port > 65535) {
         throw new RuntimeException('DB_PORT harus berupa nomor port yang valid.');
