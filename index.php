@@ -325,6 +325,10 @@ if (isset($_GET['media'])) {
     $isPublicFormMedia = false;
     if (!isset($_SESSION['user'])) {
         foreach ($data['forms'] as $form) {
+            if (($form['logo'] ?? '') === $filename) {
+                $isPublicFormMedia = true;
+                break;
+            }
             foreach ($form['questions'] as $question) {
                 if (($question['image'] ?? '') === $filename || ($question['followupImage'] ?? '') === $filename) {
                     $isPublicFormMedia = true;
