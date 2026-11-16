@@ -312,6 +312,22 @@ function mediaUrl(string $filename): string
     return 'index.php?media=' . rawurlencode($filename);
 }
 
+function findUploadedImagePath(string $filename, array $directories): ?string
+{
+    if (!preg_match('/^[a-f0-9]{32}\.(jpg|png|webp)$/', $filename)) {
+        return null;
+    }
+
+    foreach ($directories as $directory) {
+        $path = $directory . DIRECTORY_SEPARATOR . $filename;
+        if (is_file($path)) {
+            return $path;
+        }
+    }
+
+    return null;
+}
+
 function cccApplicationBaseUrl(): string
 {
     $configuredUrl = getenv('CCC_APP_URL');
@@ -370,15 +386,8 @@ if (isset($_GET['media'])) {
         http_response_code(404);
         exit;
     }
-    $path = '';
-    foreach ($uploadDirectories as $directory) {
-        $candidatePath = $directory . DIRECTORY_SEPARATOR . $filename;
-        if (is_file($candidatePath)) {
-            $path = $candidatePath;
-            break;
-        }
-    }
-    if ($path === '') {
+    $path = findUploadedImagePath($filename, $uploadDirectories);
+    if ($path === null) {
         http_response_code(404);
         exit;
     }
@@ -417,13 +426,22 @@ if (isset($_GET['qr_code'])) {
         http_response_code(404);
         exit('Form tidak ditemukan.');
     }
+    $logoPath = null;
+    $logoFilename = (string) ($form['logo'] ?? '');
+    if ($logoFilename !== '') {
+        $logoPath = findUploadedImagePath($logoFilename, $uploadDirectories);
+        if ($logoPath === null) {
+            http_response_code(404);
+            exit('Logo form tidak ditemukan. Unggah ulang logo pada form sebelum membuat QR Code.');
+        }
+    }
     if (!function_exists('curl_init')) {
         http_response_code(503);
         exit('Fitur QR Code tidak tersedia karena ekstensi PHP cURL belum aktif.');
     }
 
     $formUrl = cccApplicationBaseUrl() . '/index.php?page=fill&form=' . rawurlencode($form['id']);
-    $qrServiceUrl = 'https://api.qrserver.com/v1/create-qr-code/?size=600x600&format=png&data=' . rawurlencode($formUrl);
+    $qrServiceUrl = 'https://api.qrserver.com/v1/create-qr-code/?size=600x600&format=png&ecc=H&qzone=4&data=' . rawurlencode($formUrl);
     $curl = curl_init($qrServiceUrl);
     if ($curl === false) {
         http_response_code(503);
@@ -446,6 +464,67 @@ if (isset($_GET['qr_code'])) {
         error_log('CCC QR generation failed: HTTP ' . $httpStatus . '.');
         http_response_code(502);
         exit('QR Code gagal dibuat. Silakan coba lagi.');
+    }
+
+    if ($logoPath !== null) {
+        if (!function_exists('imagecreatefromstring') || !function_exists('imagepng')) {
+            http_response_code(503);
+            exit('Penambahan logo QR memerlukan ekstensi PHP GD.');
+        }
+
+        $qrCanvas = imagecreatefromstring($qrImage);
+        $logoBytes = file_get_contents($logoPath);
+        $logoCanvas = is_string($logoBytes) ? imagecreatefromstring($logoBytes) : false;
+        if ($qrCanvas === false || $logoCanvas === false) {
+            if ($qrCanvas !== false) {
+                imagedestroy($qrCanvas);
+            }
+            if ($logoCanvas !== false) {
+                imagedestroy($logoCanvas);
+            }
+            http_response_code(422);
+            exit('Logo form tidak dapat diproses untuk QR Code. Unggah ulang logo dalam format JPG, PNG, atau WEBP.');
+        }
+
+        $qrWidth = imagesx($qrCanvas);
+        $qrHeight = imagesy($qrCanvas);
+        $badgeSize = (int) round(min($qrWidth, $qrHeight) * 0.22);
+        $padding = (int) round($badgeSize * 0.1);
+        $logoLimit = $badgeSize - (2 * $padding);
+        $scale = min($logoLimit / imagesx($logoCanvas), $logoLimit / imagesy($logoCanvas));
+        $logoWidth = max(1, (int) round(imagesx($logoCanvas) * $scale));
+        $logoHeight = max(1, (int) round(imagesy($logoCanvas) * $scale));
+        $badgeX = (int) floor(($qrWidth - $badgeSize) / 2);
+        $badgeY = (int) floor(($qrHeight - $badgeSize) / 2);
+        $logoX = (int) floor(($qrWidth - $logoWidth) / 2);
+        $logoY = (int) floor(($qrHeight - $logoHeight) / 2);
+        imagealphablending($qrCanvas, true);
+        $borderColor = imagecolorallocate($qrCanvas, 220, 229, 234);
+        $backgroundColor = imagecolorallocate($qrCanvas, 255, 255, 255);
+        imagefilledrectangle($qrCanvas, $badgeX - 3, $badgeY - 3, $badgeX + $badgeSize + 2, $badgeY + $badgeSize + 2, $borderColor);
+        imagefilledrectangle($qrCanvas, $badgeX, $badgeY, $badgeX + $badgeSize - 1, $badgeY + $badgeSize - 1, $backgroundColor);
+        imagecopyresampled(
+            $qrCanvas,
+            $logoCanvas,
+            $logoX,
+            $logoY,
+            0,
+            0,
+            $logoWidth,
+            $logoHeight,
+            imagesx($logoCanvas),
+            imagesy($logoCanvas)
+        );
+        ob_start();
+        $pngCreated = imagepng($qrCanvas);
+        $compositedQr = ob_get_clean();
+        imagedestroy($qrCanvas);
+        imagedestroy($logoCanvas);
+        if (!$pngCreated || !is_string($compositedQr)) {
+            http_response_code(500);
+            exit('QR Code dengan logo gagal dibuat.');
+        }
+        $qrImage = $compositedQr;
     }
 
     $downloadQr = ($_GET['download'] ?? '') === '1';
@@ -879,7 +958,7 @@ $username = $_SESSION['user'] ?? '';
 $user = $data['users'][$username] ?? null;
 $flash = $_SESSION['flash'] ?? null;
 unset($_SESSION['flash']);
-$page = (string) ($_GET['page'] ?? ($user ? 'dashboard' : 'public-forms'));
+$page = (string) ($_GET['page'] ?? ($user ? 'dashboard' : 'login'));
 if (!$user && $page === 'forms') {
     $page = 'public-forms';
 }
@@ -1164,7 +1243,6 @@ $csrf = h($_SESSION['csrf']);
                                     <?php endif; ?>
                                 </section>
                             <?php endforeach; ?>
-                            <div class="alert warning" style="margin-top:15px;margin-bottom:14px">Pada pertanyaan Ya/Tidak biasa, jawaban <strong>Ya</strong> membuka pertanyaan lanjutan pilihan. Pada <strong>Verifikasi Ya/Tidak</strong>, jawaban <strong>Tidak</strong> membuka peringatan dan mewajibkan pilihan tindak lanjut, sedangkan jawaban Ya dapat langsung dikirim.</div>
                             <button class="btn btn-primary" type="submit">Kirim checklist <span aria-hidden="true">→</span></button>
                         </form>
                     </div>
@@ -1264,7 +1342,7 @@ $csrf = h($_SESSION['csrf']);
                         <?php if (!$data['forms']): ?><div class="empty">Belum ada form.</div><?php endif; ?>
                         <?php foreach ($data['forms'] as $form):
                             $formUrl = cccApplicationBaseUrl() . '/index.php?page=fill&form=' . rawurlencode($form['id']);
-                        ?><div class="panel" style="box-shadow:none;background:#fbfcfe;margin:12px 0;padding:16px"><div class="panel-head" style="margin:0 0 13px"><div><h3 class="panel-title"><?= h($form['title']) ?></h3><div class="panel-subtitle"><?= count($form['questions']) ?> pertanyaan · Dibuat <?= h(date('d M Y', strtotime($form['createdAt']))) ?></div></div><div style="display:flex;gap:7px;flex-wrap:wrap"><a class="btn btn-light btn-small" href="index.php?page=edit-form&amp;id=<?= h($form['id']) ?>">Edit</a><a class="btn btn-light btn-small" href="index.php?page=fill&amp;form=<?= h($form['id']) ?>" target="_blank" rel="noopener">Pratinjau</a><form method="post" onsubmit="return confirm('Hapus form ini dari daftar? Riwayat checklist yang sudah dikirim tetap tersimpan.')"><input type="hidden" name="csrf" value="<?= $csrf ?>"><input type="hidden" name="action" value="delete_form"><input type="hidden" name="form_id" value="<?= h($form['id']) ?>"><button class="btn btn-danger btn-small" type="submit">Hapus</button></form></div></div><div class="qr-area"><img loading="lazy" src="index.php?qr_code=<?= h($form['id']) ?>" alt="QR code <?= h($form['title']) ?>"><div><div class="field-label">QR Code untuk dibagikan</div><p class="help">Pindai atau buka URL untuk mengisi form publik. QR Code mengarah ke <?= h(DEFAULT_CCC_APP_URL) ?>. Ubah CCC_APP_URL hanya jika domain aplikasi berubah.</p><div class="form-link"><?= h($formUrl) ?></div><a class="btn btn-light btn-small" style="margin-top:10px" href="index.php?qr_code=<?= h($form['id']) ?>&amp;download=1" download="ccc-form-<?= h($form['id']) ?>.png">Download QR Code</a></div></div></div><?php endforeach; ?>
+                        ?><div class="panel" style="box-shadow:none;background:#fbfcfe;margin:12px 0;padding:16px"><div class="panel-head" style="margin:0 0 13px"><div><h3 class="panel-title"><?= h($form['title']) ?></h3><div class="panel-subtitle"><?= count($form['questions']) ?> pertanyaan · Dibuat <?= h(date('d M Y', strtotime($form['createdAt']))) ?></div></div><div style="display:flex;gap:7px;flex-wrap:wrap"><a class="btn btn-light btn-small" href="index.php?page=edit-form&amp;id=<?= h($form['id']) ?>">Edit</a><a class="btn btn-light btn-small" href="index.php?page=fill&amp;form=<?= h($form['id']) ?>" target="_blank" rel="noopener">Pratinjau</a><form method="post" onsubmit="return confirm('Hapus form ini dari daftar? Riwayat checklist yang sudah dikirim tetap tersimpan.')"><input type="hidden" name="csrf" value="<?= $csrf ?>"><input type="hidden" name="action" value="delete_form"><input type="hidden" name="form_id" value="<?= h($form['id']) ?>"><button class="btn btn-danger btn-small" type="submit">Hapus</button></form></div></div><div class="qr-area"><img loading="lazy" src="index.php?qr_code=<?= h($form['id']) ?>" alt="QR code <?= h($form['title']) ?> dengan logo form di tengah"><div><div class="field-label">QR Code untuk dibagikan</div><p class="help">Pindai atau buka URL untuk mengisi form publik. Logo form disematkan di tengah QR Code. QR Code mengarah ke <?= h(DEFAULT_CCC_APP_URL) ?>. Ubah CCC_APP_URL hanya jika domain aplikasi berubah.</p><div class="form-link"><?= h($formUrl) ?></div><a class="btn btn-light btn-small" style="margin-top:10px" href="index.php?qr_code=<?= h($form['id']) ?>&amp;download=1" download="ccc-form-<?= h($form['id']) ?>.png">Download QR Code</a></div></div></div><?php endforeach; ?>
                     </div>
                 <?php elseif ($page === 'users' && $role === 'Administrator'): ?>
                     <div class="page-heading"><div><div class="eyebrow">Access management</div><h1>Pengguna</h1><p>Kelola akun responden dan supervisor yang menerima notifikasi checklist.</p></div></div>
