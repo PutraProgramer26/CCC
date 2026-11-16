@@ -673,6 +673,9 @@ $user = $data['users'][$username] ?? null;
 $flash = $_SESSION['flash'] ?? null;
 unset($_SESSION['flash']);
 $page = (string) ($_GET['page'] ?? ($user ? 'dashboard' : 'public-forms'));
+if (!$user && $page === 'forms') {
+    $page = 'public-forms';
+}
 $supervisors = array_filter($data['users'], static fn(array $item): bool => $item['role'] === 'Supervisor');
 $visibleSubmissions = array_values(array_filter($data['submissions'], static function (array $submission) use ($user): bool {
     if (!$user) {
