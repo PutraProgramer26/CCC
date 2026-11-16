@@ -968,6 +968,33 @@ $csrf = h($_SESSION['csrf']);
         @media(max-width:380px){.cards{grid-template-columns:minmax(0,1fr)}.stat-card{padding:14px}.top-actions .muted{display:none}.content{padding-right:11px;padding-left:11px}.topbar{padding-right:10px;padding-left:10px}.page-heading h1{font-size:20px}.panel{padding:12px}}
         @media(max-width:760px){.sidebar{width:254px;padding:20px 18px;transform:translateX(0)}.brand{padding:4px 10px 28px}.brand-name,.nav-link span:not(.nav-icon),.nav-label,.profile-text{display:initial}.brand-name{display:block}.nav-link{justify-content:flex-start;padding:11px 12px}.nav-icon{font-size:initial}.profile{justify-content:flex-start;padding:17px 7px 0}.main{margin-left:0}.shell.sidebar-hidden .main{margin-left:0}.shell:not(.sidebar-hidden) .topbar-toggle{visibility:hidden}.shell.sidebar-hidden .topbar-toggle{visibility:visible}.topbar{padding:0 15px;z-index:5}.content{padding:24px 15px 40px}}
         .shell.public-shell::before{content:none}
+        .login-aside{isolation:isolate}
+        .safety-scene{position:relative;width:min(460px,100%);height:260px;margin:5px auto 0;display:grid;place-items:center;perspective:900px;isolation:isolate}
+        .safety-scene::before{content:"";position:absolute;inset:8% 12%;border-radius:50%;background:radial-gradient(ellipse,rgba(95,234,205,.2),rgba(95,234,205,0) 68%);filter:blur(8px)}
+        .safety-scene::after{content:"";position:absolute;left:13%;right:13%;bottom:18px;height:1px;background:linear-gradient(90deg,transparent,rgba(157,243,224,.45),transparent)}
+        .safety-grid{position:absolute;left:15%;right:15%;bottom:18px;height:88px;opacity:.22;background-image:linear-gradient(rgba(196,255,242,.28) 1px,transparent 1px),linear-gradient(90deg,rgba(196,255,242,.28) 1px,transparent 1px);background-size:22px 22px;transform:perspective(220px) rotateX(62deg);mask-image:linear-gradient(to bottom,transparent,#000 40%,transparent)}
+        .safety-orbit{position:absolute;border:1px solid rgba(181,255,239,.23);border-radius:50%;transform-style:preserve-3d;pointer-events:none}
+        .safety-orbit::after{content:"";position:absolute;top:50%;left:0;width:9px;height:9px;border-radius:50%;background:#ffe17a;box-shadow:0 0 16px rgba(255,225,122,.8);transform:translate(-50%,-50%)}
+        .safety-orbit-outer{width:340px;height:150px;transform:rotateX(68deg) rotateZ(-18deg);animation:safety-orbit-spin 16s linear infinite}
+        .safety-orbit-inner{width:245px;height:112px;border-color:rgba(181,255,239,.14);transform:rotateX(70deg) rotateZ(52deg);animation:safety-orbit-spin-reverse 20s linear infinite}
+        .safety-shield{position:relative;width:124px;height:146px;display:grid;place-items:center;transform-style:preserve-3d;animation:safety-shield-float 5s ease-in-out infinite}
+        .safety-shield::before{content:"";position:absolute;inset:3px;clip-path:polygon(50% 0,94% 16%,89% 61%,76% 82%,50% 100%,24% 82%,11% 61%,6% 16%);background:linear-gradient(140deg,#71f1d7,#0a897e 72%);transform:translate3d(5px,8px,-13px);filter:drop-shadow(0 18px 16px rgba(0,0,0,.24))}
+        .safety-shield svg{position:relative;z-index:1;width:100%;height:100%;overflow:visible;transform:translateZ(12px);filter:drop-shadow(0 12px 12px rgba(0,0,0,.2))}
+        .safety-token{position:absolute;z-index:2;width:58px;height:58px;display:grid;place-items:center;border:1px solid rgba(226,255,247,.35);border-radius:18px;background:linear-gradient(145deg,rgba(255,255,255,.2),rgba(255,255,255,.06));box-shadow:0 16px 30px rgba(0,0,0,.2),inset 0 1px rgba(255,255,255,.2);backdrop-filter:blur(10px);transform-style:preserve-3d}
+        .safety-token svg{width:31px;height:31px;fill:none;stroke:#eafff8;stroke-width:2;stroke-linecap:round;stroke-linejoin:round}
+        .safety-token-helmet{left:12%;top:47px;animation:safety-token-left 5.5s ease-in-out infinite}
+        .safety-token-warning{right:12%;top:56px;width:52px;height:52px;border-color:rgba(255,225,122,.55);animation:safety-token-right 4.7s ease-in-out infinite}
+        .safety-token-warning svg{stroke:#ffe17a}
+        .safety-label{position:absolute;z-index:2;right:12%;bottom:33px;display:flex;align-items:center;gap:7px;padding:8px 11px;border:1px solid rgba(176,255,236,.24);border-radius:999px;background:rgba(6,46,53,.62);color:#d8fff4;font-size:9px;font-weight:800;letter-spacing:.13em;box-shadow:0 9px 22px rgba(0,0,0,.16);animation:safety-label-float 4s ease-in-out infinite}
+        .safety-label span{width:7px;height:7px;border-radius:50%;background:#8ff0c6;box-shadow:0 0 10px rgba(143,240,198,.85)}
+        @keyframes safety-shield-float{0%,100%{transform:translateY(5px) rotateY(-12deg) rotateX(4deg)}50%{transform:translateY(-9px) rotateY(12deg) rotateX(-3deg)}}
+        @keyframes safety-orbit-spin{to{transform:rotateX(68deg) rotateZ(342deg)}}
+        @keyframes safety-orbit-spin-reverse{to{transform:rotateX(70deg) rotateZ(-308deg)}}
+        @keyframes safety-token-left{0%,100%{transform:translate3d(-3px,3px,28px) rotateY(14deg) rotateZ(-8deg)}50%{transform:translate3d(4px,-10px,38px) rotateY(-8deg) rotateZ(3deg)}}
+        @keyframes safety-token-right{0%,100%{transform:translate3d(2px,-2px,34px) rotateY(-13deg) rotateZ(7deg)}50%{transform:translate3d(-4px,9px,24px) rotateY(9deg) rotateZ(-4deg)}}
+        @keyframes safety-label-float{0%,100%{transform:translateY(0)}50%{transform:translateY(-6px)}}
+        @media(max-width:760px){.login-aside{min-height:0;gap:12px}.safety-scene{height:178px;margin:0 auto}.safety-shield{width:92px;height:108px}.safety-orbit-outer{width:245px;height:112px}.safety-orbit-inner{width:180px;height:84px}.safety-token{width:48px;height:48px;border-radius:15px}.safety-token svg{width:27px;height:27px}.safety-token-helmet{left:13%;top:23px}.safety-token-warning{right:13%;top:30px;width:44px;height:44px}.safety-label{right:13%;bottom:14px;font-size:8px}.login-copy{margin:0 0 8px}}
+        @media(prefers-reduced-motion:reduce){.safety-scene,.safety-scene::before,.safety-scene::after,.safety-scene *{animation:none!important;scroll-behavior:auto!important}.safety-shield{transform:rotateY(-8deg) rotateX(3deg)}.safety-token-helmet{transform:translateZ(28px) rotateY(10deg)}.safety-token-warning{transform:translateZ(28px) rotateY(-10deg)}}
     </style>
 </head>
 <body>
@@ -975,6 +1002,25 @@ $csrf = h($_SESSION['csrf']);
     <main class="login-page">
         <section class="login-aside">
             <div class="brand"><div class="brand-mark">C</div><div class="brand-name">CRITICAL CONTROL<span>CHECKLIST SYSTEM</span></div></div>
+            <div class="safety-scene" aria-hidden="true">
+                <div class="safety-grid"></div>
+                <div class="safety-orbit safety-orbit-outer"></div>
+                <div class="safety-orbit safety-orbit-inner"></div>
+                <div class="safety-token safety-token-helmet">
+                    <svg viewBox="0 0 48 48"><path d="M8 28h32M12 28v-5a12 12 0 0 1 24 0v5M24 11v17M6 32h36v5H6z"></path></svg>
+                </div>
+                <div class="safety-token safety-token-warning">
+                    <svg viewBox="0 0 48 48"><path d="M24 7 44 41H4L24 7Z"></path><path d="M24 18v10m0 7h.01"></path></svg>
+                </div>
+                <div class="safety-shield">
+                    <svg viewBox="0 0 120 140" role="presentation">
+                        <defs><linearGradient id="safety-shield-fill" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#f4fffc"></stop><stop offset="1" stop-color="#a8f3dc"></stop></linearGradient></defs>
+                        <path d="M60 6 108 24v35c0 34-18 58-48 75C30 117 12 93 12 59V24L60 6Z" fill="url(#safety-shield-fill)" stroke="#d7fff2" stroke-width="2"></path>
+                        <path d="m38 69 15 15 31-34" fill="none" stroke="#087c70" stroke-width="8" stroke-linecap="round" stroke-linejoin="round"></path>
+                    </svg>
+                </div>
+                <div class="safety-label"><span></span>SAFETY FIRST</div>
+            </div>
             <div class="login-copy"><div class="eyebrow">Operational safety </div><h1>Kontrol kritis, dimulai dari sini.</h1><p>Safety Starts with Me!</p></div>
             <div class="login-footer">© <?= date('Y') ?> PT Jasti Pravita</div>
         </section>
