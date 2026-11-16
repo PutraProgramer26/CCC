@@ -62,8 +62,8 @@ function sendCccApprovalEmail(array $submission): void
     $respondentEmail = (string) ($submission['respondentEmail'] ?? '');
     $supervisorName = (string) ($submission['supervisorName'] ?? 'Supervisor');
     $submittedAt = new DateTimeImmutable((string) ($submission['submittedAt'] ?? 'now'));
-    $submittedAt = $submittedAt->setTimezone(new DateTimeZone('Asia/Jakarta'));
-    $submittedAtText = $submittedAt->format('d-m-Y H:i:s') . ' WIB';
+    $submittedAt = $submittedAt->setTimezone(new DateTimeZone('Asia/Jayapura'));
+    $submittedAtText = $submittedAt->format('d-m-Y H:i:s') . ' WIT';
 
     $text = "Hasil checklist baru menunggu approval.\n\n";
     $text .= "Form: {$formTitle}\nResponden: {$respondent}\nEmail responden: {$respondentEmail}\n";
@@ -124,8 +124,11 @@ function sendCccApprovalEmail(array $submission): void
         if ($validatedUrl === false || !in_array($scheme, ['http', 'https'], true)) {
             throw new RuntimeException('CCC_APP_URL harus berupa URL aplikasi dengan protokol HTTP atau HTTPS.');
         }
-        $appLink = '<p style="margin:24px 0"><a href="' . $escape($validatedUrl) . '" style="display:inline-block;padding:11px 16px;background:#0f766e;color:#fff;text-decoration:none;border-radius:8px">Buka aplikasi CCC untuk approval</a></p>';
-        $text .= "Buka aplikasi CCC untuk memeriksa dan menyetujui checklist:\n{$validatedUrl}\n";
+        $approvalUrl = rtrim($validatedUrl, '/') . '/index.php?page=my-submissions';
+        $appLink = '<p style="margin:24px 0"><a href="' . $escape($approvalUrl) . '" style="display:inline-block;padding:11px 16px;background:#0f766e;color:#fff;text-decoration:none;border-radius:8px">Buka CCC untuk approval</a></p>'
+            . '<p style="margin:0 0 20px;color:#6b7787;font-size:12px">Login diperlukan. Hanya supervisor terpilih atau administrator yang dapat menyetujui checklist.</p>';
+        $text .= "Buka CCC untuk memeriksa dan menyetujui checklist:\n{$approvalUrl}\n"
+            . "Login diperlukan. Hanya supervisor terpilih atau administrator yang dapat menyetujui checklist.\n";
     }
 
     $html = '<!doctype html><html lang="id"><body style="margin:0;padding:24px;background:#f4f6fa;font:14px/1.6 Arial,sans-serif;color:#17212f">'

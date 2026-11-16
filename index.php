@@ -1,7 +1,7 @@
 <?php
 declare(strict_types=1);
 
-date_default_timezone_set('Asia/Jakarta');
+date_default_timezone_set('Asia/Jayapura');
 session_set_cookie_params([
     'httponly' => true,
     'secure' => isset($_SERVER['HTTPS']) && $_SERVER['HTTPS'] !== 'off',
@@ -11,9 +11,15 @@ session_start();
 
 const APP_NAME = 'CRITICAL CONTROL CHECKLIST';
 const MAX_IMAGE_SIZE = 4_194_304;
+const DEFAULT_CCC_APP_URL = 'https://jastik3.site';
 
-$privateDir = dirname(__DIR__, 2) . DIRECTORY_SEPARATOR . 'ccc-private';
+$privateDirectoryLevel = basename(__DIR__) === 'public_html' ? 1 : 2;
+$privateDir = dirname(__DIR__, $privateDirectoryLevel) . DIRECTORY_SEPARATOR . 'ccc-private';
 $uploadDir = $privateDir . DIRECTORY_SEPARATOR . 'uploads';
+$uploadDirectories = array_values(array_unique([
+    $uploadDir,
+    dirname(__DIR__, 2) . DIRECTORY_SEPARATOR . 'ccc-private' . DIRECTORY_SEPARATOR . 'uploads',
+]));
 $dataFile = $privateDir . DIRECTORY_SEPARATOR . 'data.json';
 
 foreach ([$privateDir, $uploadDir] as $directory) {
@@ -26,6 +32,18 @@ foreach ([$privateDir, $uploadDir] as $directory) {
 function h(string $value): string
 {
     return htmlspecialchars($value, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8');
+}
+
+function canApproveSubmission(?array $user, array $submission): bool
+{
+    if ($user === null) {
+        return false;
+    }
+    if (($user['role'] ?? '') === 'Administrator') {
+        return true;
+    }
+    return ($user['role'] ?? '') === 'Supervisor'
+        && ($submission['supervisor'] ?? null) === ($user['username'] ?? null);
 }
 
 function loadData(string $file): array
@@ -110,6 +128,15 @@ function redirectTo(string $query = ''): never
 {
     header('Location: index.php' . ($query !== '' ? '?' . $query : ''));
     exit;
+}
+
+function historyPageUrl(int $pageNumber, int $pageSize): string
+{
+    return 'index.php?' . http_build_query([
+        'page' => 'my-submissions',
+        'per_page' => $pageSize,
+        'history_page' => $pageNumber,
+    ]);
 }
 
 function setFlash(string $type, string $message): void
@@ -307,10 +334,12 @@ function cccApplicationBaseUrl(): string
             && !str_starts_with($lanAddress, '127.')) {
             $host = preg_replace('/^(localhost|127\.0\.0\.1)(:\d+)?$/i', $lanAddress . '$2', $host) ?? $host;
         }
+
+        $scheme = isset($_SERVER['HTTPS']) && $_SERVER['HTTPS'] !== 'off' ? 'https' : 'http';
+        return $scheme . '://' . $host . rtrim(str_replace('\\', '/', dirname((string) ($_SERVER['SCRIPT_NAME'] ?? '/index.php'))), '/');
     }
 
-    $scheme = isset($_SERVER['HTTPS']) && $_SERVER['HTTPS'] !== 'off' ? 'https' : 'http';
-    return $scheme . '://' . $host . rtrim(str_replace('\\', '/', dirname((string) ($_SERVER['SCRIPT_NAME'] ?? '/index.php'))), '/');
+    return DEFAULT_CCC_APP_URL;
 }
 
 try {
@@ -341,8 +370,15 @@ if (isset($_GET['media'])) {
         http_response_code(404);
         exit;
     }
-    $path = $uploadDir . DIRECTORY_SEPARATOR . $filename;
-    if (!is_file($path)) {
+    $path = '';
+    foreach ($uploadDirectories as $directory) {
+        $candidatePath = $directory . DIRECTORY_SEPARATOR . $filename;
+        if (is_file($candidatePath)) {
+            $path = $candidatePath;
+            break;
+        }
+    }
+    if ($path === '') {
         http_response_code(404);
         exit;
     }
@@ -355,6 +391,70 @@ if (isset($_GET['media'])) {
     header('X-Content-Type-Options: nosniff');
     header('Cache-Control: private, max-age=3600');
     readfile($path);
+    exit;
+}
+
+if (isset($_GET['qr_code'])) {
+    $currentAccount = $data['users'][$_SESSION['user'] ?? ''] ?? null;
+    if (!$currentAccount || $currentAccount['role'] !== 'Administrator') {
+        http_response_code(403);
+        exit('Akses tidak diizinkan.');
+    }
+
+    $formId = (string) $_GET['qr_code'];
+    if (!preg_match('/^[a-f0-9]{12}$/', $formId)) {
+        http_response_code(404);
+        exit('QR Code tidak ditemukan.');
+    }
+    $form = null;
+    foreach ($data['forms'] as $candidate) {
+        if ($candidate['id'] === $formId) {
+            $form = $candidate;
+            break;
+        }
+    }
+    if ($form === null) {
+        http_response_code(404);
+        exit('Form tidak ditemukan.');
+    }
+    if (!function_exists('curl_init')) {
+        http_response_code(503);
+        exit('Fitur QR Code tidak tersedia karena ekstensi PHP cURL belum aktif.');
+    }
+
+    $formUrl = cccApplicationBaseUrl() . '/index.php?page=fill&form=' . rawurlencode($form['id']);
+    $qrServiceUrl = 'https://api.qrserver.com/v1/create-qr-code/?size=600x600&format=png&data=' . rawurlencode($formUrl);
+    $curl = curl_init($qrServiceUrl);
+    if ($curl === false) {
+        http_response_code(503);
+        exit('QR Code tidak dapat dibuat saat ini.');
+    }
+    $configured = curl_setopt_array($curl, [
+        CURLOPT_RETURNTRANSFER => true,
+        CURLOPT_CONNECTTIMEOUT => 8,
+        CURLOPT_TIMEOUT => 20,
+        CURLOPT_SSL_VERIFYPEER => true,
+        CURLOPT_SSL_VERIFYHOST => 2,
+        CURLOPT_FOLLOWLOCATION => false,
+    ]);
+    $qrImage = $configured ? curl_exec($curl) : false;
+    $httpStatus = (int) curl_getinfo($curl, CURLINFO_HTTP_CODE);
+    curl_close($curl);
+
+    $mimeType = is_string($qrImage) ? (new finfo(FILEINFO_MIME_TYPE))->buffer($qrImage) : false;
+    if (!is_string($qrImage) || $httpStatus !== 200 || $mimeType !== 'image/png') {
+        error_log('CCC QR generation failed: HTTP ' . $httpStatus . '.');
+        http_response_code(502);
+        exit('QR Code gagal dibuat. Silakan coba lagi.');
+    }
+
+    $downloadQr = ($_GET['download'] ?? '') === '1';
+    header('Content-Type: image/png');
+    header('Content-Disposition: ' . ($downloadQr ? 'attachment' : 'inline') . '; filename="ccc-form-' . $formId . '.png"');
+    header('Content-Length: ' . strlen($qrImage));
+    header('X-Content-Type-Options: nosniff');
+    header('Cache-Control: private, no-store');
+    echo $qrImage;
     exit;
 }
 
@@ -489,6 +589,79 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             ];
             saveData($dataFile, $data);
             setFlash('success', 'Akun ' . $role . ' berhasil ditambahkan.');
+            redirectTo('page=users');
+        }
+
+        if ($action === 'update_user' && $currentUser && $currentUser['role'] === 'Administrator') {
+            $username = (string) ($_POST['username'] ?? '');
+            $account = $data['users'][$username] ?? null;
+            if ($account === null) {
+                throw new RuntimeException('Akun yang akan diubah tidak ditemukan.');
+            }
+
+            $name = trim((string) ($_POST['name'] ?? ''));
+            $email = trim((string) ($_POST['email'] ?? ''));
+            $password = (string) ($_POST['password'] ?? '');
+            $role = $account['role'] === 'Administrator'
+                ? 'Administrator'
+                : (string) ($_POST['role'] ?? '');
+            $allowedRoles = $account['role'] === 'Administrator'
+                ? ['Administrator']
+                : ['Supervisor', 'Respondent'];
+            if ($name === '' || (function_exists('mb_strlen') ? mb_strlen($name, 'UTF-8') : strlen($name)) > 100
+                || !filter_var($email, FILTER_VALIDATE_EMAIL)
+                || !in_array($role, $allowedRoles, true)
+                || ($password !== '' && strlen($password) < 8)) {
+                throw new RuntimeException('Nama, email, role, atau kata sandi baru tidak valid. Kata sandi harus minimal 8 karakter.');
+            }
+
+            if ($role !== $account['role']) {
+                foreach ($data['submissions'] as $submission) {
+                    if ($submission['supervisor'] === $username && $submission['status'] === 'Menunggu approval') {
+                        throw new RuntimeException('Role tidak dapat diubah karena akun ini masih memiliki checklist yang menunggu approval.');
+                    }
+                }
+            }
+
+            $account['name'] = $name;
+            $account['email'] = $email;
+            $account['role'] = $role;
+            if ($password !== '') {
+                $account['password'] = password_hash($password, PASSWORD_DEFAULT);
+            }
+            $data['users'][$username] = $account;
+            saveData($dataFile, $data);
+            setFlash('success', 'Akun ' . $username . ' berhasil diperbarui.');
+            redirectTo('page=users');
+        }
+
+        if ($action === 'delete_user' && $currentUser && $currentUser['role'] === 'Administrator') {
+            $username = (string) ($_POST['username'] ?? '');
+            $account = $data['users'][$username] ?? null;
+            if ($account === null) {
+                throw new RuntimeException('Akun yang akan dihapus tidak ditemukan.');
+            }
+            if ($username === $currentUser['username']) {
+                throw new RuntimeException('Akun yang sedang digunakan tidak dapat dihapus.');
+            }
+            if ($account['role'] === 'Administrator') {
+                $administratorCount = count(array_filter(
+                    $data['users'],
+                    static fn(array $item): bool => $item['role'] === 'Administrator'
+                ));
+                if ($administratorCount <= 1) {
+                    throw new RuntimeException('Administrator terakhir tidak dapat dihapus.');
+                }
+            }
+            foreach ($data['submissions'] as $submission) {
+                if ($submission['supervisor'] === $username && $submission['status'] === 'Menunggu approval') {
+                    throw new RuntimeException('Akun tidak dapat dihapus karena masih memiliki checklist yang menunggu approval.');
+                }
+            }
+
+            unset($data['users'][$username]);
+            saveData($dataFile, $data);
+            setFlash('success', 'Akun ' . $username . ' berhasil dihapus. Riwayat checklist tetap tersimpan.');
             redirectTo('page=users');
         }
 
@@ -670,8 +843,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 if ($submission['id'] !== $submissionId) {
                     continue;
                 }
-                if ($currentUser['role'] === 'Supervisor' && $submission['supervisor'] !== $currentUser['username']) {
-                    throw new RuntimeException('Supervisor hanya dapat menyetujui checklist yang ditujukan kepadanya.');
+                if (!canApproveSubmission($currentUser, $submission)) {
+                    throw new RuntimeException('Hanya administrator atau supervisor terpilih yang dapat menyetujui checklist ini.');
                 }
                 if ($submission['status'] !== 'Menunggu approval') {
                     throw new RuntimeException('Checklist ini sudah diproses sebelumnya.');
@@ -711,6 +884,14 @@ if (!$user && $page === 'forms') {
     $page = 'public-forms';
 }
 $supervisors = array_filter($data['users'], static fn(array $item): bool => $item['role'] === 'Supervisor');
+$administratorCount = count(array_filter(
+    $data['users'],
+    static fn(array $item): bool => $item['role'] === 'Administrator'
+));
+$pendingSupervisorUsernames = array_fill_keys(array_column(
+    array_filter($data['submissions'], static fn(array $item): bool => $item['status'] === 'Menunggu approval'),
+    'supervisor'
+), true);
 $visibleSubmissions = array_values(array_filter($data['submissions'], static function (array $submission) use ($user): bool {
     if (!$user) {
         return false;
@@ -724,6 +905,19 @@ $visibleSubmissions = array_values(array_filter($data['submissions'], static fun
     return $submission['respondent'] === $user['name'];
 }));
 usort($visibleSubmissions, static fn(array $a, array $b): int => strcmp($b['submittedAt'], $a['submittedAt']));
+$historyPageSizes = [10, 50, 75, 100, 150, 200];
+$requestedPageSize = filter_var($_GET['per_page'] ?? 10, FILTER_VALIDATE_INT);
+$historyPageSize = in_array($requestedPageSize, $historyPageSizes, true) ? $requestedPageSize : 10;
+$historyTotal = count($visibleSubmissions);
+$historyPageCount = max(1, (int) ceil($historyTotal / $historyPageSize));
+$requestedHistoryPage = filter_var($_GET['history_page'] ?? 1, FILTER_VALIDATE_INT);
+$historyPage = is_int($requestedHistoryPage) && $requestedHistoryPage > 0
+    ? min($requestedHistoryPage, $historyPageCount)
+    : 1;
+$historyOffset = ($historyPage - 1) * $historyPageSize;
+$historyPageSubmissions = array_slice($visibleSubmissions, $historyOffset, $historyPageSize);
+$historyFirstItem = $historyTotal > 0 ? $historyOffset + 1 : 0;
+$historyLastItem = min($historyOffset + $historyPageSize, $historyTotal);
 $selectedForm = null;
 if ($page === 'fill') {
     foreach ($data['forms'] as $form) {
@@ -850,6 +1044,26 @@ $csrf = h($_SESSION['csrf']);
             <header class="topbar"><?php if ($user): ?><div class="topbar-left"><button type="button" class="btn btn-light sidebar-toggle topbar-toggle" aria-label="Tampilkan sidebar" title="Tampilkan / sembunyikan sidebar" aria-controls="app-sidebar" aria-expanded="true">☰</button><div class="crumb">CCC <span style="padding:0 7px;color:#aeb8c4">/</span> <b><?= h($pageTitle) ?></b></div></div><div class="top-actions"><span class="badge"><?= h($role) ?></span><span class="muted" style="font-size:11px"><?= date('d M Y') ?></span></div><?php else: ?><a class="brand" href="index.php"><div class="brand-mark">C</div><div class="brand-name">CRITICAL CONTROL<span>CHECKLIST SYSTEM</span></div></a><a class="btn btn-light btn-small" href="index.php?page=login">Masuk</a><?php endif; ?></header>
             <div class="content">
                 <?php if ($flash): ?><div class="alert <?= h($flash['type']) ?>"><?= h($flash['message']) ?></div><?php endif; ?>
+                <?php if ($page === 'my-submissions' && $user): ?>
+                    <section class="panel" style="display:flex;justify-content:space-between;align-items:center;gap:14px;flex-wrap:wrap;margin-bottom:16px">
+                        <form method="get" style="display:flex;align-items:center;gap:9px;flex-wrap:wrap">
+                            <input type="hidden" name="page" value="my-submissions">
+                            <label for="history-page-size" style="font-size:12px;font-weight:600">Data per halaman</label>
+                            <select id="history-page-size" name="per_page">
+                                <?php foreach ($historyPageSizes as $pageSize): ?>
+                                    <option value="<?= $pageSize ?>" <?= $pageSize === $historyPageSize ? 'selected' : '' ?>><?= $pageSize ?> data</option>
+                                <?php endforeach; ?>
+                            </select>
+                            <button class="btn btn-light btn-small" type="submit">Terapkan</button>
+                        </form>
+                        <div style="display:flex;align-items:center;gap:10px;font-size:12px">
+                            <span><?= $historyFirstItem ?>–<?= $historyLastItem ?> dari <?= $historyTotal ?> data</span>
+                            <?php if ($historyPage > 1): ?><a class="btn btn-light btn-small" href="<?= h(historyPageUrl($historyPage - 1, $historyPageSize)) ?>">← Sebelumnya</a><?php endif; ?>
+                            <span>Halaman <?= $historyPage ?> / <?= $historyPageCount ?></span>
+                            <?php if ($historyPage < $historyPageCount): ?><a class="btn btn-light btn-small" href="<?= h(historyPageUrl($historyPage + 1, $historyPageSize)) ?>">Berikutnya →</a><?php endif; ?>
+                        </div>
+                    </section>
+                <?php endif; ?>
 
                 <?php if ($page === 'submitted' && !$user): ?>
                     <section class="panel" style="max-width:680px;margin:50px auto;text-align:center;padding:36px 24px">
@@ -935,7 +1149,18 @@ $csrf = h($_SESSION['csrf']);
                     <?php if (!$data['forms']): ?><div class="empty"><strong>Belum ada checklist</strong>Administrator belum membuat form untuk diisi.</div><?php endif; ?>
                     <?php foreach ($data['forms'] as $form): ?><article class="panel" style="display:flex;justify-content:space-between;align-items:center;gap:18px"><div><h2 class="panel-title"><?= h($form['title']) ?></h2><p class="panel-subtitle"><?= h($form['description']) ?></p><span class="badge" style="margin-top:10px"><?= count($form['questions']) ?> pertanyaan</span></div><a class="btn btn-primary" href="index.php?page=fill&amp;form=<?= h($form['id']) ?>">Isi form →</a></article><?php endforeach; ?>
                     <div class="panel"><div class="panel-head"><div><h2 class="panel-title">Status pengisian terbaru</h2><div class="panel-subtitle">Pantau checklist yang telah Anda kirim.</div></div><a class="btn btn-light btn-small" href="index.php?page=my-submissions">Semua riwayat</a></div>
-                    <?php if (!$visibleSubmissions): ?><div class="empty">Belum ada checklist yang dikirim.</div><?php else: ?><div class="table-wrap"><table><thead><tr><th>Checklist</th><th>Waktu dikirim</th><th>Supervisor</th><th>Status</th></tr></thead><tbody><?php foreach (array_slice($visibleSubmissions, 0, 5) as $submission): ?><tr><td><strong><?= h($submission['formTitle']) ?></strong></td><td><?= h(date('d M Y, H:i', strtotime($submission['submittedAt']))) ?> WIB</td><td><?= h($submission['supervisorName']) ?></td><td><span class="badge <?= $submission['status'] === 'Disetujui' ? 'approved' : 'pending' ?>"><?= h($submission['status']) ?></span></td></tr><?php endforeach; ?></tbody></table></div><?php endif; ?></div>
+                    <?php if (!$visibleSubmissions): ?><div class="empty">Belum ada checklist yang dikirim.</div><?php else: ?><div class="table-wrap"><table><thead><tr><th>Checklist</th><th>Waktu dikirim</th><th>Supervisor</th><th>Status</th></tr></thead><tbody><?php foreach (array_slice($visibleSubmissions, 0, 5) as $submission): ?><tr><td><strong><?= h($submission['formTitle']) ?></strong></td><td><?= h(date('d M Y, H:i', strtotime($submission['submittedAt']))) ?> WIT</td><td><?= h($submission['supervisorName']) ?></td><td><span class="badge <?= $submission['status'] === 'Disetujui' ? 'approved' : 'pending' ?>"><?= h($submission['status']) ?></span></td></tr><?php endforeach; ?></tbody></table></div><?php endif; ?></div>
+                <?php elseif ($role === 'Respondent' && $page === 'my-submissions'): ?>
+                    <div class="page-heading"><div><div class="eyebrow">Riwayat pengisian</div><h1>Riwayat saya</h1><p>Semua checklist yang Anda kirim, dengan status approval terbaru.</p></div><a class="btn btn-light" href="index.php?page=dashboard">← Kembali ke form</a></div>
+                    <?php if (!$historyPageSubmissions): ?>
+                        <div class="empty"><strong>Belum ada checklist</strong>Checklist yang Anda kirim akan tampil di sini.</div>
+                    <?php else: ?>
+                        <section class="panel"><div class="table-wrap"><table><thead><tr><th>Checklist</th><th>Waktu dikirim</th><th>Supervisor</th><th>Status approval</th></tr></thead><tbody>
+                            <?php foreach ($historyPageSubmissions as $submission): ?>
+                                <tr><td><strong><?= h($submission['formTitle']) ?></strong></td><td><?= h(date('d M Y, H:i', strtotime($submission['submittedAt']))) ?> WIT</td><td><?= h($submission['supervisorName']) ?></td><td><span class="badge <?= $submission['status'] === 'Disetujui' ? 'approved' : 'pending' ?>"><?= h($submission['status']) ?></span></td></tr>
+                            <?php endforeach; ?>
+                        </tbody></table></div></section>
+                    <?php endif; ?>
                 <?php elseif ($page === 'edit-form' && $role === 'Administrator' && $editingForm): ?>
                     <div class="page-heading"><div><div class="eyebrow">Questionnaire management</div><h1>Edit form checklist</h1><p>Perbarui judul, deskripsi, pertanyaan, opsi, dan gambar pendukung.</p></div><a class="btn btn-light" href="index.php?page=forms">← Kembali ke form</a></div>
                     <div class="panel"><div class="panel-head"><div><h2 class="panel-title">Edit <?= h($editingForm['title']) ?></h2><div class="panel-subtitle">Riwayat checklist yang sudah dikirim tidak berubah saat form diedit.</div></div></div>
@@ -990,12 +1215,59 @@ $csrf = h($_SESSION['csrf']);
                         <?php if (!$data['forms']): ?><div class="empty">Belum ada form.</div><?php endif; ?>
                         <?php foreach ($data['forms'] as $form):
                             $formUrl = cccApplicationBaseUrl() . '/index.php?page=fill&form=' . rawurlencode($form['id']);
-                        ?><div class="panel" style="box-shadow:none;background:#fbfcfe;margin:12px 0;padding:16px"><div class="panel-head" style="margin:0 0 13px"><div><h3 class="panel-title"><?= h($form['title']) ?></h3><div class="panel-subtitle"><?= count($form['questions']) ?> pertanyaan · Dibuat <?= h(date('d M Y', strtotime($form['createdAt']))) ?></div></div><div style="display:flex;gap:7px;flex-wrap:wrap"><a class="btn btn-light btn-small" href="index.php?page=edit-form&amp;id=<?= h($form['id']) ?>">Edit</a><a class="btn btn-light btn-small" href="index.php?page=fill&amp;form=<?= h($form['id']) ?>" target="_blank" rel="noopener">Pratinjau</a><form method="post" onsubmit="return confirm('Hapus form ini dari daftar? Riwayat checklist yang sudah dikirim tetap tersimpan.')"><input type="hidden" name="csrf" value="<?= $csrf ?>"><input type="hidden" name="action" value="delete_form"><input type="hidden" name="form_id" value="<?= h($form['id']) ?>"><button class="btn btn-danger btn-small" type="submit">Hapus</button></form></div></div><div class="qr-area"><img loading="lazy" src="https://api.qrserver.com/v1/create-qr-code/?size=180x180&amp;data=<?= rawurlencode($formUrl) ?>" alt="QR code <?= h($form['title']) ?>"><div><div class="field-label">QR Code untuk dibagikan</div><p class="help">Pindai untuk langsung membuka form tanpa login. Responden mengisi nama dan email sebelum mengirim. Untuk akses internet, atur CCC_APP_URL ke domain HTTPS aplikasi.</p><div class="form-link"><?= h($formUrl) ?></div><a class="btn btn-light btn-small" style="margin-top:10px" href="https://api.qrserver.com/v1/create-qr-code/?size=600x600&amp;data=<?= rawurlencode($formUrl) ?>" target="_blank" rel="noopener">Buka / simpan QR</a></div></div></div><?php endforeach; ?>
+                        ?><div class="panel" style="box-shadow:none;background:#fbfcfe;margin:12px 0;padding:16px"><div class="panel-head" style="margin:0 0 13px"><div><h3 class="panel-title"><?= h($form['title']) ?></h3><div class="panel-subtitle"><?= count($form['questions']) ?> pertanyaan · Dibuat <?= h(date('d M Y', strtotime($form['createdAt']))) ?></div></div><div style="display:flex;gap:7px;flex-wrap:wrap"><a class="btn btn-light btn-small" href="index.php?page=edit-form&amp;id=<?= h($form['id']) ?>">Edit</a><a class="btn btn-light btn-small" href="index.php?page=fill&amp;form=<?= h($form['id']) ?>" target="_blank" rel="noopener">Pratinjau</a><form method="post" onsubmit="return confirm('Hapus form ini dari daftar? Riwayat checklist yang sudah dikirim tetap tersimpan.')"><input type="hidden" name="csrf" value="<?= $csrf ?>"><input type="hidden" name="action" value="delete_form"><input type="hidden" name="form_id" value="<?= h($form['id']) ?>"><button class="btn btn-danger btn-small" type="submit">Hapus</button></form></div></div><div class="qr-area"><img loading="lazy" src="index.php?qr_code=<?= h($form['id']) ?>" alt="QR code <?= h($form['title']) ?>"><div><div class="field-label">QR Code untuk dibagikan</div><p class="help">Pindai atau buka URL untuk mengisi form publik. QR Code mengarah ke <?= h(DEFAULT_CCC_APP_URL) ?>. Ubah CCC_APP_URL hanya jika domain aplikasi berubah.</p><div class="form-link"><?= h($formUrl) ?></div><a class="btn btn-light btn-small" style="margin-top:10px" href="index.php?qr_code=<?= h($form['id']) ?>&amp;download=1" download="ccc-form-<?= h($form['id']) ?>.png">Download QR Code</a></div></div></div><?php endforeach; ?>
                     </div>
                 <?php elseif ($page === 'users' && $role === 'Administrator'): ?>
                     <div class="page-heading"><div><div class="eyebrow">Access management</div><h1>Pengguna</h1><p>Kelola akun responden dan supervisor yang menerima notifikasi checklist.</p></div></div>
                     <div class="panel"><div class="panel-head"><div><h2 class="panel-title">Tambah pengguna</h2><div class="panel-subtitle">Akun supervisor perlu alamat email aktif untuk menerima notifikasi.</div></div></div><form method="post"><input type="hidden" name="csrf" value="<?= $csrf ?>"><input type="hidden" name="action" value="create_user"><div class="form-grid"><div class="field"><label>Nama lengkap</label><input name="new_name" required maxlength="100"></div><div class="field"><label>Username</label><input name="new_username" required minlength="3" maxlength="30" pattern="[a-zA-Z0-9._-]+"></div><div class="field"><label>Email</label><input name="new_email" type="email" required></div><div class="field"><label>Role</label><select name="new_role"><option value="Supervisor">Supervisor</option><option value="Respondent">Respondent</option></select></div><div class="field"><label>Kata sandi awal (min. 8 karakter)</label><input name="new_password" type="password" required minlength="8" autocomplete="new-password"></div></div><button class="btn btn-primary" type="submit">＋ Buat akun</button></form></div>
-                    <div class="panel"><div class="panel-head"><div><h2 class="panel-title">Daftar akun</h2><div class="panel-subtitle"><?= count($data['users']) ?> pengguna terdaftar</div></div></div><div class="table-wrap"><table><thead><tr><th>Pengguna</th><th>Username</th><th>Email</th><th>Role</th></tr></thead><tbody><?php foreach ($data['users'] as $account): ?><tr><td><div class="user-row"><div class="person-dot"><?= h(strtoupper(substr($account['name'], 0, 1))) ?></div><strong><?= h($account['name']) ?></strong></div></td><td><?= h($account['username']) ?></td><td><?= h($account['email']) ?></td><td><span class="badge"><?= h($account['role']) ?></span></td></tr><?php endforeach; ?></tbody></table></div></div>
+                    <div class="panel"><div class="panel-head"><div><h2 class="panel-title">Daftar akun</h2><div class="panel-subtitle"><?= count($data['users']) ?> pengguna terdaftar</div></div></div><div class="table-wrap"><table><thead><tr><th>Pengguna</th><th>Username</th><th>Email</th><th>Role</th><th>Aksi</th></tr></thead><tbody>
+                        <?php foreach ($data['users'] as $account): ?>
+                            <?php
+                                $accountUsername = $account['username'];
+                                $accountHasPendingApprovals = isset($pendingSupervisorUsernames[$accountUsername]);
+                                $isLastAdministrator = $account['role'] === 'Administrator' && $administratorCount <= 1;
+                                $canDeleteAccount = $accountUsername !== $user['username'] && !$isLastAdministrator && !$accountHasPendingApprovals;
+                                $roleIsLocked = $account['role'] === 'Administrator' || $accountHasPendingApprovals;
+                            ?>
+                            <tr>
+                                <td><div class="user-row"><div class="person-dot"><?= h(strtoupper(substr($account['name'], 0, 1))) ?></div><strong><?= h($account['name']) ?></strong></div></td>
+                                <td><?= h($accountUsername) ?></td>
+                                <td><?= h($account['email']) ?></td>
+                                <td><span class="badge"><?= h($account['role']) ?></span></td>
+                                <td>
+                                    <details>
+                                        <summary class="btn btn-light btn-small">Edit</summary>
+                                        <form method="post" style="min-width:240px;padding:12px;border:1px solid var(--line);border-radius:8px;margin-top:8px">
+                                            <input type="hidden" name="csrf" value="<?= $csrf ?>">
+                                            <input type="hidden" name="action" value="update_user">
+                                            <input type="hidden" name="username" value="<?= h($accountUsername) ?>">
+                                            <div class="field"><label>Nama</label><input name="name" maxlength="100" required value="<?= h($account['name']) ?>"></div>
+                                            <div class="field"><label>Email</label><input name="email" type="email" required value="<?= h($account['email']) ?>"></div>
+                                            <?php if ($roleIsLocked): ?>
+                                                <input type="hidden" name="role" value="<?= h($account['role']) ?>">
+                                                <div class="field"><label>Role</label><span class="badge"><?= h($account['role']) ?></span><?php if ($accountHasPendingApprovals): ?><span class="help">Role dikunci karena masih ada approval tertunda.</span><?php endif; ?></div>
+                                            <?php else: ?>
+                                                <div class="field"><label>Role</label><select name="role" required><option value="Supervisor" <?= $account['role'] === 'Supervisor' ? 'selected' : '' ?>>Supervisor</option><option value="Respondent" <?= $account['role'] === 'Respondent' ? 'selected' : '' ?>>Respondent</option></select></div>
+                                            <?php endif; ?>
+                                            <div class="field"><label>Kata sandi baru (opsional)</label><input name="password" type="password" minlength="8" autocomplete="new-password"><span class="help">Kosongkan jika tidak ingin mengganti kata sandi.</span></div>
+                                            <span class="help">Username tidak dapat diubah agar riwayat checklist tetap terhubung.</span>
+                                            <button class="btn btn-primary btn-small" type="submit">Simpan perubahan</button>
+                                        </form>
+                                    </details>
+                                    <?php if ($canDeleteAccount): ?>
+                                        <form method="post" style="display:inline" onsubmit="return confirm('Hapus akun ini? Riwayat checklist tetap tersimpan.')">
+                                            <input type="hidden" name="csrf" value="<?= $csrf ?>">
+                                            <input type="hidden" name="action" value="delete_user">
+                                            <input type="hidden" name="username" value="<?= h($accountUsername) ?>">
+                                            <button class="btn btn-danger btn-small" type="submit">Hapus</button>
+                                        </form>
+                                    <?php else: ?>
+                                        <span class="help"><?= $accountUsername === $user['username'] ? 'Akun aktif' : ($isLastAdministrator ? 'Admin terakhir' : 'Approval tertunda') ?></span>
+                                    <?php endif; ?>
+                                </td>
+                            </tr>
+                        <?php endforeach; ?>
+                    </tbody></table></div></div>
                 <?php elseif (($page === 'my-submissions' || $page === 'dashboard') && $role !== 'Respondent'): ?>
                     <?php
                         $allCount = count($visibleSubmissions);
@@ -1027,12 +1299,12 @@ $csrf = h($_SESSION['csrf']);
                         <article class="stat-card"><div class="stat-top"><span>Disetujui</span><span class="stat-icon" style="background:#e5f5ee;color:#17734c">✓</span></div><div class="stat-number"><?= $approvedCount ?></div><div class="stat-foot">Checklist selesai disetujui</div></article>
                         <article class="stat-card"><div class="stat-top"><span><?= $role === 'Administrator' ? 'Supervisor aktif' : 'Notifikasi email' ?></span><span class="stat-icon" style="background:#edf1fa;color:#4c5f9a"><?= $role === 'Administrator' ? '♙' : '✉' ?></span></div><div class="stat-number"><?= $role === 'Administrator' ? $supervisorCount : $emailFailures ?></div><div class="stat-foot"><?= $role === 'Administrator' ? 'Akun penerima checklist' : 'Status email gagal / belum dikirim' ?></div></article>
                     </section>
-                    <section class="panel"><div class="panel-head"><div><h2 class="panel-title">Hasil pengisian terbaru</h2><div class="panel-subtitle">Waktu ditampilkan menurut zona waktu WIB (Asia/Jakarta).</div></div><a class="btn btn-light btn-small" href="index.php?page=my-submissions">Lihat semua</a></div>
+                    <section class="panel"><div class="panel-head"><div><h2 class="panel-title">Hasil pengisian terbaru</h2><div class="panel-subtitle">Waktu ditampilkan menurut zona waktu WIT (Asia/Jayapura).</div></div><a class="btn btn-light btn-small" href="index.php?page=my-submissions">Lihat semua</a></div>
                         <?php if (!$visibleSubmissions): ?><div class="empty"><strong>Belum ada hasil pengisian</strong>Hasil checklist akan muncul di sini setelah responden mengirim form.</div><?php else: ?>
                         <div class="table-wrap"><table><thead><tr><th>Checklist / responden</th><th>Email responden</th><th>Waktu dikirim</th><th>Status email</th><th>Status approval</th><th>Aksi</th></tr></thead><tbody>
-                            <?php foreach (($page === 'my-submissions' ? $visibleSubmissions : array_slice($visibleSubmissions, 0, 12)) as $submission): ?>
-                                <tr><td><div class="person"><div class="person-dot"><?= h(strtoupper(substr($submission['respondent'], 0, 1))) ?></div><div><strong><?= h($submission['formTitle']) ?></strong><div class="muted" style="font-size:10px"><?= h($submission['respondent']) ?></div></div></div></td><td><?= h($submission['respondentEmail']) ?></td><td><?= h(date('d M Y, H:i', strtotime($submission['submittedAt']))) ?> WIB</td><td><span class="badge <?= str_starts_with($submission['emailStatus'], 'Terkirim') ? 'approved' : 'failed' ?>"><?= h($submission['emailStatus']) ?></span></td><td><span class="badge <?= $submission['status'] === 'Disetujui' ? 'approved' : 'pending' ?>"><?= h($submission['status']) ?></span><?php if ($submission['status'] === 'Disetujui'): ?><div class="muted" style="font-size:9px;margin-top:4px">oleh <?= h($submission['approvedBy']) ?></div><?php endif; ?></td><td><?php if ($submission['status'] === 'Menunggu approval'): ?><form method="post" onsubmit="return confirm('Setujui checklist ini?')"><input type="hidden" name="csrf" value="<?= $csrf ?>"><input type="hidden" name="action" value="approve"><input type="hidden" name="submission_id" value="<?= h($submission['id']) ?>"><button class="btn btn-primary btn-small" type="submit">✓ Setujui</button></form><?php else: ?><span class="muted">Selesai</span><?php endif; ?></td></tr>
-                                <tr><td colspan="6"><details><summary style="cursor:pointer;color:#617080;font-size:10px">Lihat jawaban (<?= count($submission['answers']) ?>)</summary><div class="submission-detail"><?php foreach ($submission['answers'] as $index => $answer): ?><p><strong><?= $index + 1 ?>. <?= h($answer['question']) ?></strong><br>Jawaban: <?php if (($answer['type'] ?? 'yes_no') === 'text'): ?><span style="white-space:pre-wrap;overflow-wrap:anywhere"><?= h($answer['choice']) ?></span><?php else: ?><span class="badge <?= $answer['choice'] === 'Ya' ? 'approved' : '' ?>"><?= h($answer['choice']) ?></span><?php endif; ?><?php if (($answer['type'] ?? '') === 'verification' && $answer['choice'] === 'Tidak'): ?><br><span class="muted"><?= h($answer['verificationMessage'] ?? 'Peringatan') ?></span><br>Pilihan: <span class="badge"><?= h($answer['verificationAnswer'] ?? '') ?></span><?php endif; ?><?php if (($answer['type'] ?? 'yes_no') === 'yes_no' && $answer['choice'] === 'Ya'): ?><?php if (($answer['followup'] ?? '') !== ''): ?><br><?= h($answer['followup']) ?>: <?= h($answer['followupAnswer'] ?? '') ?><?php endif; ?><?php foreach ($answer['followupChoiceAnswers'] ?? [] as $followupChoiceAnswer): ?><br><?= h($followupChoiceAnswer['question']) ?>: <span class="badge"><?= h($followupChoiceAnswer['choice']) ?></span><?php endforeach; ?><?php endif; ?></p><?php endforeach; ?><p class="muted">Supervisor: <?= h($submission['supervisorName']) ?><?= $submission['approvedAt'] !== '' ? ' · Disetujui ' . h(date('d M Y, H:i', strtotime($submission['approvedAt']))) . ' WIB' : '' ?></p></div></details></td></tr>
+                            <?php foreach (($page === 'my-submissions' ? $historyPageSubmissions : array_slice($visibleSubmissions, 0, 12)) as $submission): ?>
+                                <tr><td><div class="person"><div class="person-dot"><?= h(strtoupper(substr($submission['respondent'], 0, 1))) ?></div><div><strong><?= h($submission['formTitle']) ?></strong><div class="muted" style="font-size:10px"><?= h($submission['respondent']) ?></div></div></div></td><td><?= h($submission['respondentEmail']) ?></td><td><?= h(date('d M Y, H:i', strtotime($submission['submittedAt']))) ?> WIT</td><td><span class="badge <?= str_starts_with($submission['emailStatus'], 'Terkirim') ? 'approved' : 'failed' ?>"><?= h($submission['emailStatus']) ?></span></td><td><span class="badge <?= $submission['status'] === 'Disetujui' ? 'approved' : 'pending' ?>"><?= h($submission['status']) ?></span><?php if ($submission['status'] === 'Disetujui'): ?><div class="muted" style="font-size:9px;margin-top:4px">oleh <?= h($submission['approvedBy']) ?></div><?php endif; ?></td><td><?php if (canApproveSubmission($user, $submission) && $submission['status'] === 'Menunggu approval'): ?><form method="post" onsubmit="return confirm('Setujui checklist ini?')"><input type="hidden" name="csrf" value="<?= $csrf ?>"><input type="hidden" name="action" value="approve"><input type="hidden" name="submission_id" value="<?= h($submission['id']) ?>"><button class="btn btn-primary btn-small" type="submit">✓ Setujui</button></form><?php else: ?><span class="muted"><?= $submission['status'] === 'Menunggu approval' ? 'Tidak ada aksi' : 'Selesai' ?></span><?php endif; ?></td></tr>
+                                <tr><td colspan="6"><details><summary style="cursor:pointer;color:#617080;font-size:10px">Lihat jawaban (<?= count($submission['answers']) ?>)</summary><div class="submission-detail"><?php foreach ($submission['answers'] as $index => $answer): ?><p><strong><?= $index + 1 ?>. <?= h($answer['question']) ?></strong><br>Jawaban: <?php if (($answer['type'] ?? 'yes_no') === 'text'): ?><span style="white-space:pre-wrap;overflow-wrap:anywhere"><?= h($answer['choice']) ?></span><?php else: ?><span class="badge <?= $answer['choice'] === 'Ya' ? 'approved' : '' ?>"><?= h($answer['choice']) ?></span><?php endif; ?><?php if (($answer['type'] ?? '') === 'verification' && $answer['choice'] === 'Tidak'): ?><br><span class="muted"><?= h($answer['verificationMessage'] ?? 'Peringatan') ?></span><br>Pilihan: <span class="badge"><?= h($answer['verificationAnswer'] ?? '') ?></span><?php endif; ?><?php if (($answer['type'] ?? 'yes_no') === 'yes_no' && $answer['choice'] === 'Ya'): ?><?php if (($answer['followup'] ?? '') !== ''): ?><br><?= h($answer['followup']) ?>: <?= h($answer['followupAnswer'] ?? '') ?><?php endif; ?><?php foreach ($answer['followupChoiceAnswers'] ?? [] as $followupChoiceAnswer): ?><br><?= h($followupChoiceAnswer['question']) ?>: <span class="badge"><?= h($followupChoiceAnswer['choice']) ?></span><?php endforeach; ?><?php endif; ?></p><?php endforeach; ?><p class="muted">Supervisor: <?= h($submission['supervisorName']) ?><?= $submission['approvedAt'] !== '' ? ' · Disetujui ' . h(date('d M Y, H:i', strtotime($submission['approvedAt']))) . ' WIT' : '' ?></p></div></details></td></tr>
                             <?php endforeach; ?>
                         </tbody></table></div><?php endif; ?>
                     </section>

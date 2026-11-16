@@ -176,6 +176,7 @@ function persistCccData(PDO $connection, array $data, array $previousData): void
          VALUES (:username, :name, :role, :email, :password_hash)
          ON DUPLICATE KEY UPDATE name = VALUES(name), role = VALUES(role), email = VALUES(email), password_hash = VALUES(password_hash)'
     );
+    $deleteUserStatement = $connection->prepare('DELETE FROM ccc_users WHERE username = :username');
     $formStatement = $connection->prepare(
         'INSERT INTO ccc_forms (id, title, description, company_logo, questions_json, created_at)
          VALUES (:id, :title, :description, :company_logo, :questions_json, :created_at)
@@ -190,6 +191,11 @@ function persistCccData(PDO $connection, array $data, array $previousData): void
 
     $connection->beginTransaction();
     try {
+        foreach ($previousData['users'] ?? [] as $username => $_user) {
+            if (!array_key_exists($username, $data['users'])) {
+                $deleteUserStatement->execute(['username' => $username]);
+            }
+        }
         foreach ($data['users'] as $username => $user) {
             if (($previousData['users'][$username] ?? null) === $user) {
                 continue;
