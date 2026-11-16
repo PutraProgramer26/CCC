@@ -64,9 +64,14 @@ function ensureCccSchema(PDO $connection): void
             role VARCHAR(20) NOT NULL,
             email VARCHAR(254) NOT NULL,
             password_hash VARCHAR(255) NOT NULL,
+            is_active TINYINT(1) NOT NULL DEFAULT 1,
             INDEX idx_ccc_users_role (role)
         ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci"
     );
+    $userActiveColumn = $connection->query("SHOW COLUMNS FROM ccc_users LIKE 'is_active'")->fetch();
+    if (!$userActiveColumn) {
+        $connection->exec("ALTER TABLE ccc_users ADD COLUMN is_active TINYINT(1) NOT NULL DEFAULT 1 AFTER password_hash");
+    }
     $connection->exec(
         "CREATE TABLE IF NOT EXISTS ccc_forms (
             id CHAR(12) NOT NULL PRIMARY KEY,
@@ -120,13 +125,14 @@ function fetchCccData(PDO $connection): array
 {
     $data = ['users' => [], 'forms' => [], 'submissions' => []];
 
-    foreach ($connection->query('SELECT username, name, role, email, password_hash FROM ccc_users') as $row) {
+    foreach ($connection->query('SELECT username, name, role, email, password_hash, is_active FROM ccc_users') as $row) {
         $data['users'][$row['username']] = [
             'username' => $row['username'],
             'name' => $row['name'],
             'role' => $row['role'],
             'email' => $row['email'],
             'password' => $row['password_hash'],
+            'isActive' => (bool) $row['is_active'],
         ];
     }
 
@@ -178,9 +184,9 @@ function persistCccData(PDO $connection, array $data, array $previousData): void
 {
     $jsonFlags = JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES | JSON_THROW_ON_ERROR;
     $userStatement = $connection->prepare(
-        'INSERT INTO ccc_users (username, name, role, email, password_hash)
-         VALUES (:username, :name, :role, :email, :password_hash)
-         ON DUPLICATE KEY UPDATE name = VALUES(name), role = VALUES(role), email = VALUES(email), password_hash = VALUES(password_hash)'
+        'INSERT INTO ccc_users (username, name, role, email, password_hash, is_active)
+         VALUES (:username, :name, :role, :email, :password_hash, :is_active)
+         ON DUPLICATE KEY UPDATE name = VALUES(name), role = VALUES(role), email = VALUES(email), password_hash = VALUES(password_hash), is_active = VALUES(is_active)'
     );
     $deleteUserStatement = $connection->prepare('DELETE FROM ccc_users WHERE username = :username');
     $formStatement = $connection->prepare(
@@ -212,6 +218,7 @@ function persistCccData(PDO $connection, array $data, array $previousData): void
                 'role' => $user['role'],
                 'email' => $user['email'],
                 'password_hash' => $user['password'],
+                'is_active' => isset($user['isActive']) ? (int) (bool) $user['isActive'] : 1,
             ]);
         }
 

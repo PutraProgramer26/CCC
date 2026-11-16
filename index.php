@@ -36,7 +36,7 @@ function h(string $value): string
 
 function canApproveSubmission(?array $user, array $submission): bool
 {
-    if ($user === null) {
+    if ($user === null || !($user['isActive'] ?? true)) {
         return false;
     }
     if (($user['role'] ?? '') === 'Administrator') {
@@ -367,8 +367,10 @@ try {
 
 if (isset($_GET['media'])) {
     $filename = (string) $_GET['media'];
+    $mediaUser = $data['users'][$_SESSION['user'] ?? ''] ?? null;
+    $hasActiveSession = $mediaUser !== null && ($mediaUser['isActive'] ?? true);
     $isPublicFormMedia = false;
-    if (!isset($_SESSION['user'])) {
+    if (!$hasActiveSession) {
         foreach ($data['forms'] as $form) {
             if (($form['logo'] ?? '') === $filename) {
                 $isPublicFormMedia = true;
@@ -382,7 +384,7 @@ if (isset($_GET['media'])) {
             }
         }
     }
-    if ((!isset($_SESSION['user']) && !$isPublicFormMedia) || !preg_match('/^[a-f0-9]{32}\.(jpg|png|webp)$/', $filename)) {
+    if ((!$hasActiveSession && !$isPublicFormMedia) || !preg_match('/^[a-f0-9]{32}\.(jpg|png|webp)$/', $filename)) {
         http_response_code(404);
         exit;
     }
@@ -405,7 +407,7 @@ if (isset($_GET['media'])) {
 
 if (isset($_GET['qr_code'])) {
     $currentAccount = $data['users'][$_SESSION['user'] ?? ''] ?? null;
-    if (!$currentAccount || $currentAccount['role'] !== 'Administrator') {
+    if (!$currentAccount || !($currentAccount['isActive'] ?? true) || $currentAccount['role'] !== 'Administrator') {
         http_response_code(403);
         exit('Akses tidak diizinkan.');
     }
@@ -552,6 +554,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             if (!$user || !password_verify($password, $user['password'])) {
                 throw new RuntimeException('Nama pengguna atau kata sandi tidak sesuai.');
             }
+            if (!($user['isActive'] ?? true)) {
+                throw new RuntimeException('Akun ini sedang dinonaktifkan. Hubungi administrator.');
+            }
             session_regenerate_id(true);
             $_SESSION['user'] = $username;
             $_SESSION['csrf'] = bin2hex(random_bytes(32));
@@ -573,6 +578,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         }
 
         $currentUser = $data['users'][$_SESSION['user'] ?? ''] ?? null;
+        if ($currentUser && !($currentUser['isActive'] ?? true)) {
+            $currentUser = null;
+        }
         if (!$currentUser && $action !== 'submit_response') {
             throw new RuntimeException('Silakan masuk terlebih dahulu.');
         }
@@ -670,6 +678,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 'role' => $role,
                 'email' => $email,
                 'password' => password_hash($password, PASSWORD_DEFAULT),
+                'isActive' => true,
             ];
             saveData($dataFile, $data);
             setFlash('success', 'Akun ' . $role . ' berhasil ditambahkan.');
@@ -719,6 +728,32 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             redirectTo('page=users');
         }
 
+        if ($action === 'toggle_user_status' && $currentUser && $currentUser['role'] === 'Administrator') {
+            $username = (string) ($_POST['username'] ?? '');
+            $account = $data['users'][$username] ?? null;
+            if ($account === null) {
+                throw new RuntimeException('Akun yang akan diubah tidak ditemukan.');
+            }
+            if ($username === $currentUser['username']) {
+                throw new RuntimeException('Akun administrator yang sedang digunakan tidak dapat dinonaktifkan.');
+            }
+            if ($account['role'] === 'Administrator' && ($account['isActive'] ?? true)) {
+                $activeAdministratorCount = count(array_filter(
+                    $data['users'],
+                    static fn(array $item): bool => $item['role'] === 'Administrator' && ($item['isActive'] ?? true)
+                ));
+                if ($activeAdministratorCount <= 1) {
+                    throw new RuntimeException('Administrator aktif terakhir tidak dapat dinonaktifkan.');
+                }
+            }
+
+            $account['isActive'] = !($account['isActive'] ?? true);
+            $data['users'][$username] = $account;
+            saveData($dataFile, $data);
+            setFlash('success', 'Akun ' . $username . ($account['isActive'] ? ' berhasil diaktifkan kembali.' : ' berhasil dinonaktifkan.'));
+            redirectTo('page=users');
+        }
+
         if ($action === 'delete_user' && $currentUser && $currentUser['role'] === 'Administrator') {
             $username = (string) ($_POST['username'] ?? '');
             $account = $data['users'][$username] ?? null;
@@ -735,6 +770,15 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 ));
                 if ($administratorCount <= 1) {
                     throw new RuntimeException('Administrator terakhir tidak dapat dihapus.');
+                }
+                if (($account['isActive'] ?? true)) {
+                    $activeAdministratorCount = count(array_filter(
+                        $data['users'],
+                        static fn(array $item): bool => $item['role'] === 'Administrator' && ($item['isActive'] ?? true)
+                    ));
+                    if ($activeAdministratorCount <= 1) {
+                        throw new RuntimeException('Administrator aktif terakhir tidak dapat dihapus.');
+                    }
                 }
             }
             foreach ($data['submissions'] as $submission) {
@@ -782,7 +826,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 ? (string) ($_POST['answer'][$supervisorQuestionIndex] ?? '')
                 : (string) ($_POST['supervisor'] ?? '');
             $supervisor = $data['users'][$supervisorUsername] ?? null;
-            if (!filter_var($email, FILTER_VALIDATE_EMAIL) || !$supervisor || $supervisor['role'] !== 'Supervisor') {
+            if (!filter_var($email, FILTER_VALIDATE_EMAIL) || !$supervisor || $supervisor['role'] !== 'Supervisor' || !($supervisor['isActive'] ?? true)) {
                 throw new RuntimeException('Periksa form, email responden, dan supervisor yang dipilih.');
             }
             $answers = [];
@@ -976,6 +1020,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         setFlash('error', $exception->getMessage());
         $failedPublicFormId = (string) ($_POST['form_id'] ?? '');
         $failedAccount = $data['users'][$_SESSION['user'] ?? ''] ?? null;
+        if ($failedAccount && !($failedAccount['isActive'] ?? true)) {
+            $failedAccount = null;
+        }
         if ($action === 'submit_response' && (!$failedAccount || $failedAccount['role'] !== 'Respondent') && preg_match('/^[a-f0-9]{12}$/', $failedPublicFormId)) {
             redirectTo('page=fill&form=' . rawurlencode($failedPublicFormId));
         }
@@ -985,6 +1032,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
 $username = $_SESSION['user'] ?? '';
 $user = $data['users'][$username] ?? null;
+if ($user && !($user['isActive'] ?? true)) {
+    $user = null;
+}
 $flash = $_SESSION['flash'] ?? null;
 unset($_SESSION['flash']);
 $page = (string) ($_GET['page'] ?? ($user ? 'dashboard' : 'login'));
@@ -1024,10 +1074,17 @@ if ($page === 'approve') {
 if (!$user && $page === 'forms') {
     $page = 'public-forms';
 }
-$supervisors = array_filter($data['users'], static fn(array $item): bool => $item['role'] === 'Supervisor');
+$supervisors = array_filter(
+    $data['users'],
+    static fn(array $item): bool => $item['role'] === 'Supervisor' && ($item['isActive'] ?? true)
+);
 $administratorCount = count(array_filter(
     $data['users'],
     static fn(array $item): bool => $item['role'] === 'Administrator'
+));
+$activeAdministratorCount = count(array_filter(
+    $data['users'],
+    static fn(array $item): bool => $item['role'] === 'Administrator' && ($item['isActive'] ?? true)
 ));
 $pendingSupervisorUsernames = array_fill_keys(array_column(
     array_filter($data['submissions'], static fn(array $item): bool => $item['status'] === 'Menunggu approval'),
@@ -1417,15 +1474,24 @@ $csrf = h($_SESSION['csrf']);
                         ?><div class="panel" style="box-shadow:none;background:#fbfcfe;margin:12px 0;padding:16px"><div class="panel-head" style="margin:0 0 13px"><div><h3 class="panel-title"><?= h($form['title']) ?></h3><div class="panel-subtitle"><?= count($form['questions']) ?> pertanyaan · Dibuat <?= h(date('d M Y', strtotime($form['createdAt']))) ?></div></div><div style="display:flex;gap:7px;flex-wrap:wrap"><a class="btn btn-light btn-small" href="index.php?page=edit-form&amp;id=<?= h($form['id']) ?>">Edit</a><a class="btn btn-light btn-small" href="index.php?page=fill&amp;form=<?= h($form['id']) ?>" target="_blank" rel="noopener">Pratinjau</a><form method="post" onsubmit="return confirm('Hapus form ini dari daftar? Riwayat checklist yang sudah dikirim tetap tersimpan.')"><input type="hidden" name="csrf" value="<?= $csrf ?>"><input type="hidden" name="action" value="delete_form"><input type="hidden" name="form_id" value="<?= h($form['id']) ?>"><button class="btn btn-danger btn-small" type="submit">Hapus</button></form></div></div><div class="qr-area"><img loading="lazy" src="index.php?qr_code=<?= h($form['id']) ?>" alt="QR code <?= h($form['title']) ?> dengan logo form di tengah"><div><div class="field-label">QR Code untuk dibagikan</div><p class="help">Pindai atau buka URL untuk mengisi form publik. Logo form disematkan di tengah QR Code. QR Code mengarah ke <?= h(DEFAULT_CCC_APP_URL) ?>. Ubah CCC_APP_URL hanya jika domain aplikasi berubah.</p><div class="form-link"><?= h($formUrl) ?></div><a class="btn btn-light btn-small" style="margin-top:10px" href="index.php?qr_code=<?= h($form['id']) ?>&amp;download=1" download="ccc-form-<?= h($form['id']) ?>.png">Download QR Code</a></div></div></div><?php endforeach; ?>
                     </div>
                 <?php elseif ($page === 'users' && $role === 'Administrator'): ?>
-                    <div class="page-heading"><div><div class="eyebrow">Access management</div><h1>Pengguna</h1><p>Kelola akun responden dan supervisor yang menerima notifikasi checklist.</p></div></div>
+                    <div class="page-heading"><div><div class="eyebrow">Access management</div><h1>Pengguna</h1><p>Kelola akun responden dan supervisor. Akun nonaktif tidak dapat login dan tidak muncul sebagai pilihan supervisor pada form.</p></div></div>
                     <div class="panel"><div class="panel-head"><div><h2 class="panel-title">Tambah pengguna</h2><div class="panel-subtitle">Akun supervisor perlu alamat email aktif untuk menerima notifikasi.</div></div></div><form method="post"><input type="hidden" name="csrf" value="<?= $csrf ?>"><input type="hidden" name="action" value="create_user"><div class="form-grid"><div class="field"><label>Nama lengkap</label><input name="new_name" required maxlength="100"></div><div class="field"><label>Username</label><input name="new_username" required minlength="3" maxlength="30" pattern="[a-zA-Z0-9._-]+"></div><div class="field"><label>Email</label><input name="new_email" type="email" required></div><div class="field"><label>Role</label><select name="new_role"><option value="Supervisor">Supervisor</option><option value="Respondent">Respondent</option></select></div><div class="field"><label>Kata sandi awal (min. 8 karakter)</label><input name="new_password" type="password" required minlength="8" autocomplete="new-password"></div></div><button class="btn btn-primary" type="submit">＋ Buat akun</button></form></div>
-                    <div class="panel"><div class="panel-head"><div><h2 class="panel-title">Daftar akun</h2><div class="panel-subtitle"><?= count($data['users']) ?> pengguna terdaftar</div></div></div><div class="table-wrap"><table><thead><tr><th>Pengguna</th><th>Username</th><th>Email</th><th>Role</th><th>Aksi</th></tr></thead><tbody>
+                    <div class="panel"><div class="panel-head"><div><h2 class="panel-title">Daftar akun</h2><div class="panel-subtitle"><?= count($data['users']) ?> pengguna terdaftar</div></div></div><div class="table-wrap"><table><thead><tr><th>Pengguna</th><th>Username</th><th>Email</th><th>Role</th><th>Status</th><th>Aksi</th></tr></thead><tbody>
                         <?php foreach ($data['users'] as $account): ?>
                             <?php
                                 $accountUsername = $account['username'];
+                                $accountIsActive = $account['isActive'] ?? true;
                                 $accountHasPendingApprovals = isset($pendingSupervisorUsernames[$accountUsername]);
                                 $isLastAdministrator = $account['role'] === 'Administrator' && $administratorCount <= 1;
-                                $canDeleteAccount = $accountUsername !== $user['username'] && !$isLastAdministrator && !$accountHasPendingApprovals;
+                                $cannotDeactivateLastAdministrator = $accountIsActive
+                                    && $account['role'] === 'Administrator'
+                                    && $activeAdministratorCount <= 1;
+                                $canToggleAccount = $accountUsername !== $user['username'] && !$cannotDeactivateLastAdministrator;
+                                $cannotDeleteLastActiveAdministrator = $cannotDeactivateLastAdministrator;
+                                $canDeleteAccount = $accountUsername !== $user['username']
+                                    && !$isLastAdministrator
+                                    && !$cannotDeleteLastActiveAdministrator
+                                    && !$accountHasPendingApprovals;
                                 $roleIsLocked = $account['role'] === 'Administrator' || $accountHasPendingApprovals;
                             ?>
                             <tr>
@@ -1433,6 +1499,7 @@ $csrf = h($_SESSION['csrf']);
                                 <td><?= h($accountUsername) ?></td>
                                 <td><?= h($account['email']) ?></td>
                                 <td><span class="badge"><?= h($account['role']) ?></span></td>
+                                <td><span class="badge <?= $accountIsActive ? 'approved' : 'failed' ?>"><?= $accountIsActive ? 'Aktif' : 'Nonaktif' ?></span></td>
                                 <td>
                                     <details>
                                         <summary class="btn btn-light btn-small">Detail akun / edit</summary>
@@ -1463,6 +1530,16 @@ $csrf = h($_SESSION['csrf']);
                                             <button class="btn btn-primary btn-small" type="submit">Simpan perubahan</button>
                                         </form>
                                     </details>
+                                    <?php if ($canToggleAccount): ?>
+                                        <form method="post" style="display:inline" onsubmit="return confirm('<?= $accountIsActive ? 'Nonaktifkan' : 'Aktifkan kembali' ?> akun ini?')">
+                                            <input type="hidden" name="csrf" value="<?= $csrf ?>">
+                                            <input type="hidden" name="action" value="toggle_user_status">
+                                            <input type="hidden" name="username" value="<?= h($accountUsername) ?>">
+                                            <button class="btn <?= $accountIsActive ? 'btn-danger' : 'btn-light' ?> btn-small" type="submit"><?= $accountIsActive ? 'Nonaktifkan' : 'Aktifkan' ?></button>
+                                        </form>
+                                    <?php else: ?>
+                                        <span class="help"><?= $accountUsername === $user['username'] ? 'Akun yang sedang digunakan' : 'Administrator aktif terakhir' ?></span>
+                                    <?php endif; ?>
                                     <?php if ($canDeleteAccount): ?>
                                         <form method="post" style="display:inline" onsubmit="return confirm('Hapus akun ini? Riwayat checklist tetap tersimpan.')">
                                             <input type="hidden" name="csrf" value="<?= $csrf ?>">
@@ -1471,7 +1548,7 @@ $csrf = h($_SESSION['csrf']);
                                             <button class="btn btn-danger btn-small" type="submit">Hapus</button>
                                         </form>
                                     <?php else: ?>
-                                        <span class="help"><?= $accountUsername === $user['username'] ? 'Akun aktif' : ($isLastAdministrator ? 'Admin terakhir' : 'Approval tertunda') ?></span>
+                                        <span class="help"><?= $accountUsername === $user['username'] ? 'Akun aktif' : ($isLastAdministrator ? 'Admin terakhir' : ($cannotDeleteLastActiveAdministrator ? 'Admin aktif terakhir' : 'Approval tertunda')) ?></span>
                                     <?php endif; ?>
                                 </td>
                             </tr>
