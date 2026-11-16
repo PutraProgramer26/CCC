@@ -165,7 +165,24 @@ function sendCccApprovalEmail(array $submission): void
         }
         $statusCode = (int) curl_getinfo($curl, CURLINFO_RESPONSE_CODE);
         if ($statusCode < 200 || $statusCode >= 300) {
-            throw new RuntimeException('Hostinger Mail API menolak pengiriman (HTTP ' . $statusCode . '). Periksa token, mailbox, dan kuota email.');
+            $apiError = json_decode($response, true);
+            $errorCode = is_array($apiError) && is_string($apiError['code'] ?? null)
+                ? (string) $apiError['code']
+                : '';
+            $errorMessage = is_array($apiError) && is_string($apiError['error'] ?? null)
+                ? trim((string) $apiError['error'])
+                : '';
+            if (function_exists('mb_substr')) {
+                $errorMessage = mb_substr($errorMessage, 0, 120, 'UTF-8');
+            } else {
+                $errorMessage = substr($errorMessage, 0, 120);
+            }
+            throw new RuntimeException(
+                'Hostinger Mail API menolak pengiriman (HTTP ' . $statusCode . ')'
+                . ($errorCode !== '' ? ' ' . $errorCode : '')
+                . ($errorMessage !== '' ? ': ' . $errorMessage : '')
+                . '.'
+            );
         }
     } finally {
         curl_close($curl);

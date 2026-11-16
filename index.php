@@ -630,6 +630,40 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             redirectTo($currentUser && $currentUser['role'] === 'Respondent' ? 'page=my-submissions' : 'page=submitted');
         }
 
+        if ($action === 'resend_email' && $currentUser && $currentUser['role'] === 'Administrator') {
+            $submissionId = (string) ($_POST['submission_id'] ?? '');
+            $submissionIndex = null;
+            foreach ($data['submissions'] as $index => $submission) {
+                if ($submission['id'] === $submissionId) {
+                    $submissionIndex = $index;
+                    break;
+                }
+            }
+            if ($submissionIndex === null) {
+                throw new RuntimeException('Data checklist untuk pengiriman ulang tidak ditemukan.');
+            }
+            if (str_starts_with($data['submissions'][$submissionIndex]['emailStatus'], 'Terkirim')) {
+                throw new RuntimeException('Notifikasi untuk checklist ini sudah berhasil dikirim.');
+            }
+
+            try {
+                require_once __DIR__ . DIRECTORY_SEPARATOR . 'send_approval_email.php';
+                sendCccApprovalEmail($data['submissions'][$submissionIndex]);
+            } catch (Throwable $exception) {
+                $emailStatus = 'Gagal — ' . $exception->getMessage();
+                $data['submissions'][$submissionIndex]['emailStatus'] = function_exists('mb_substr')
+                    ? mb_substr($emailStatus, 0, 160, 'UTF-8')
+                    : substr($emailStatus, 0, 160);
+                saveData($dataFile, $data);
+                throw new RuntimeException('Pengiriman ulang email gagal: ' . $exception->getMessage(), 0, $exception);
+            }
+
+            $data['submissions'][$submissionIndex]['emailStatus'] = 'Terkirim';
+            saveData($dataFile, $data);
+            setFlash('success', 'Notifikasi email berhasil diteruskan ke supervisor.');
+            redirectTo('page=my-submissions');
+        }
+
         if ($action === 'approve' && $currentUser && in_array($currentUser['role'], ['Administrator', 'Supervisor'], true)) {
             $submissionId = (string) ($_POST['submission_id'] ?? '');
             foreach ($data['submissions'] as &$submission) {
@@ -967,8 +1001,25 @@ $csrf = h($_SESSION['csrf']);
                         $allCount = count($visibleSubmissions);
                         $approvedCount = count(array_filter($visibleSubmissions, static fn(array $item): bool => $item['status'] === 'Disetujui'));
                         $emailFailures = count(array_filter($visibleSubmissions, static fn(array $item): bool => !str_starts_with($item['emailStatus'], 'Terkirim')));
+                        $emailRetries = $role === 'Administrator'
+                            ? array_values(array_filter($visibleSubmissions, static fn(array $item): bool => !str_starts_with($item['emailStatus'], 'Terkirim')))
+                            : [];
                         $supervisorCount = count($supervisors);
                     ?>
+                    <?php if ($emailRetries): ?>
+                        <section class="panel">
+                            <div class="panel-head"><div><h2 class="panel-title">Notifikasi email gagal</h2><div class="panel-subtitle">Kirim ulang setelah konfigurasi email diperbaiki.</div></div></div>
+                            <?php foreach ($emailRetries as $failedEmail): ?>
+                                <form method="post" style="display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap;border-top:1px solid var(--line);padding:12px 0">
+                                    <input type="hidden" name="csrf" value="<?= $csrf ?>">
+                                    <input type="hidden" name="action" value="resend_email">
+                                    <input type="hidden" name="submission_id" value="<?= h($failedEmail['id']) ?>">
+                                    <span style="font-size:12px"><strong><?= h($failedEmail['formTitle']) ?></strong> · <?= h($failedEmail['supervisorEmail']) ?><br><span class="muted"><?= h($failedEmail['emailStatus']) ?></span></span>
+                                    <button class="btn btn-light btn-small" type="submit">Kirim ulang</button>
+                                </form>
+                            <?php endforeach; ?>
+                        </section>
+                    <?php endif; ?>
                     <div class="page-heading"><div><div class="eyebrow"><?= $role === 'Administrator' ? 'Overview · All operations' : 'Review · Assigned checklists' ?></div><h1><?= $page === 'my-submissions' ? 'Riwayat checklist' : 'Dashboard' ?></h1><p><?= $role === 'Administrator' ? 'Pantau jawaban responden, status persetujuan, dan notifikasi email.' : 'Tinjau dan setujui checklist yang ditujukan kepada Anda.' ?></p></div><?php if ($role === 'Administrator'): ?><a class="btn btn-primary" href="index.php?page=forms">＋ Kelola form</a><?php endif; ?></div>
                     <section class="cards">
                         <article class="stat-card"><div class="stat-top"><span>Total checklist</span><span class="stat-icon">▤</span></div><div class="stat-number"><?= $allCount ?></div><div class="stat-foot">Seluruh pengisian yang tercatat</div></article>
