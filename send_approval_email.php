@@ -192,19 +192,27 @@ function sendCccApprovalEmail(array $submission): void
     }
 
     $appUrl = getenv('CCC_APP_URL');
-    $appLink = '';
-    if ($appUrl !== false && trim($appUrl) !== '') {
-        $validatedUrl = filter_var(trim($appUrl), FILTER_VALIDATE_URL);
-        $scheme = $validatedUrl === false ? '' : strtolower((string) parse_url($validatedUrl, PHP_URL_SCHEME));
-        if ($validatedUrl === false || !in_array($scheme, ['http', 'https'], true)) {
-            throw new RuntimeException('CCC_APP_URL harus berupa URL aplikasi dengan protokol HTTP atau HTTPS.');
-        }
-        $approvalUrl = rtrim($validatedUrl, '/') . '/index.php?page=my-submissions';
-        $appLink = '<p style="margin:24px 0"><a href="' . $escape($approvalUrl) . '" style="display:inline-block;padding:11px 16px;background:#0f766e;color:#fff;text-decoration:none;border-radius:8px">Buka CCC untuk approval</a></p>'
-            . '<p style="margin:0 0 20px;color:#6b7787;font-size:12px">Login diperlukan. Hanya supervisor terpilih atau administrator yang dapat menyetujui checklist.</p>';
-        $text .= "Buka CCC untuk memeriksa dan menyetujui checklist:\n{$approvalUrl}\n"
-            . "Login diperlukan. Hanya supervisor terpilih atau administrator yang dapat menyetujui checklist.\n";
+    if ($appUrl === false || trim($appUrl) === '') {
+        $appUrl = defined('DEFAULT_CCC_APP_URL') ? DEFAULT_CCC_APP_URL : 'https://jastik3.site';
     }
+    $validatedUrl = filter_var(trim($appUrl), FILTER_VALIDATE_URL);
+    $scheme = $validatedUrl === false ? '' : strtolower((string) parse_url($validatedUrl, PHP_URL_SCHEME));
+    if ($validatedUrl === false || !in_array($scheme, ['http', 'https'], true)) {
+        throw new RuntimeException('CCC_APP_URL harus berupa URL aplikasi dengan protokol HTTP atau HTTPS.');
+    }
+    $submissionId = (string) ($submission['id'] ?? '');
+    if (!preg_match('/^[a-f0-9]{16}$/', $submissionId)) {
+        throw new RuntimeException('ID checklist untuk tautan approval tidak valid.');
+    }
+    $approvalUrl = rtrim(trim($appUrl), '/') . '/index.php?'
+        . http_build_query([
+            'page' => 'approve',
+            'submission_id' => $submissionId,
+        ], '', '&', PHP_QUERY_RFC3986);
+    $appLink = '<p style="margin:24px 0"><a href="' . $escape($approvalUrl) . '" style="display:inline-block;padding:11px 20px;background:#0f766e;color:#fff;text-decoration:none;border-radius:8px;font-weight:700">Approve</a></p>'
+        . '<p style="margin:0 0 20px;color:#6b7787;font-size:12px">Anda harus login. Setelah login, checklist ini akan langsung terbuka untuk ditinjau. Approval tetap dilakukan di dalam sistem.</p>';
+    $text .= "Buka checklist untuk ditinjau dan disetujui:\n{$approvalUrl}\n"
+        . "Login diperlukan. Setelah login, checklist ini akan langsung terbuka untuk ditinjau.\n";
 
     $html = '<!doctype html><html lang="id"><body style="margin:0;padding:24px;background:#f4f6fa;font:14px/1.6 Arial,sans-serif;color:#17212f">'
         . '<div style="max-width:680px;margin:0 auto;padding:24px;background:#fff;border:1px solid #e6eaf0;border-radius:12px">'

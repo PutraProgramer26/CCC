@@ -556,6 +556,11 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             $_SESSION['user'] = $username;
             $_SESSION['csrf'] = bin2hex(random_bytes(32));
             setFlash('success', 'Selamat datang, ' . $user['name'] . '.');
+            $pendingApprovalSubmissionId = $_SESSION['pending_approval_submission'] ?? '';
+            unset($_SESSION['pending_approval_submission']);
+            if (is_string($pendingApprovalSubmissionId) && preg_match('/^[a-f0-9]{16}$/', $pendingApprovalSubmissionId)) {
+                redirectTo('page=approve&submission_id=' . rawurlencode($pendingApprovalSubmissionId));
+            }
             redirectTo();
         }
 
@@ -983,6 +988,39 @@ $user = $data['users'][$username] ?? null;
 $flash = $_SESSION['flash'] ?? null;
 unset($_SESSION['flash']);
 $page = (string) ($_GET['page'] ?? ($user ? 'dashboard' : 'login'));
+if ($page === 'approve') {
+    $approvalSubmissionId = (string) ($_GET['submission_id'] ?? '');
+    if (!preg_match('/^[a-f0-9]{16}$/', $approvalSubmissionId)) {
+        setFlash('error', 'Tautan checklist untuk approval tidak valid.');
+        redirectTo($user ? 'page=my-submissions' : '');
+    }
+    if (!$user) {
+        $_SESSION['pending_approval_submission'] = $approvalSubmissionId;
+        $page = 'login';
+        if (!$flash) {
+            $flash = ['type' => 'warning', 'message' => 'Silakan login untuk meninjau checklist yang dipilih.'];
+        }
+    } else {
+        $canViewApprovalSubmission = false;
+        foreach ($data['submissions'] as $submission) {
+            if ($submission['id'] === $approvalSubmissionId && canApproveSubmission($user, $submission)) {
+                $canViewApprovalSubmission = true;
+                break;
+            }
+        }
+        if (!$canViewApprovalSubmission) {
+            setFlash('error', 'Checklist tidak ditemukan atau Anda tidak memiliki akses untuk meninjaunya.');
+            redirectTo('page=my-submissions');
+        }
+        if (is_array($flash) && isset($flash['type'], $flash['message'])) {
+            setFlash((string) $flash['type'], (string) $flash['message']);
+        }
+        redirectTo(
+            'page=my-submissions&submission_id=' . rawurlencode($approvalSubmissionId)
+            . '#submission-' . rawurlencode($approvalSubmissionId)
+        );
+    }
+}
 if (!$user && $page === 'forms') {
     $page = 'public-forms';
 }
@@ -1011,9 +1049,19 @@ usort($visibleSubmissions, static fn(array $a, array $b): int => strcmp($b['subm
 $historyPageSizes = [10, 50, 75, 100, 150, 200];
 $requestedPageSize = filter_var($_GET['per_page'] ?? 10, FILTER_VALIDATE_INT);
 $historyPageSize = in_array($requestedPageSize, $historyPageSizes, true) ? $requestedPageSize : 10;
+$requestedSubmissionId = (string) ($_GET['submission_id'] ?? '');
+$requestedHistoryPage = $_GET['history_page'] ?? 1;
+if (preg_match('/^[a-f0-9]{16}$/', $requestedSubmissionId)) {
+    foreach ($visibleSubmissions as $index => $submission) {
+        if ($submission['id'] === $requestedSubmissionId) {
+            $requestedHistoryPage = (int) floor($index / $historyPageSize) + 1;
+            break;
+        }
+    }
+}
 $historyTotal = count($visibleSubmissions);
 $historyPageCount = max(1, (int) ceil($historyTotal / $historyPageSize));
-$requestedHistoryPage = filter_var($_GET['history_page'] ?? 1, FILTER_VALIDATE_INT);
+$requestedHistoryPage = filter_var($requestedHistoryPage, FILTER_VALIDATE_INT);
 $historyPage = is_int($requestedHistoryPage) && $requestedHistoryPage > 0
     ? min($requestedHistoryPage, $historyPageCount)
     : 1;
@@ -1487,8 +1535,8 @@ $csrf = h($_SESSION['csrf']);
                         <?php if (!$visibleSubmissions): ?><div class="empty"><strong>Belum ada hasil pengisian</strong>Hasil checklist akan muncul di sini setelah responden mengirim form.</div><?php else: ?>
                         <div class="table-wrap"><table><thead><tr><th>Checklist / responden</th><th>Email responden</th><th>Waktu dikirim</th><th>Status email</th><th>Status approval</th><th>Aksi</th></tr></thead><tbody>
                             <?php foreach (($page === 'my-submissions' ? $historyPageSubmissions : array_slice($visibleSubmissions, 0, 12)) as $submission): ?>
-                                <tr><td><div class="person"><div class="person-dot"><?= h(strtoupper(substr($submission['respondent'], 0, 1))) ?></div><div><strong><?= h($submission['formTitle']) ?></strong><div class="muted" style="font-size:10px"><?= h($submission['respondent']) ?></div></div></div></td><td><?= h($submission['respondentEmail']) ?></td><td><?= h(date('d M Y, H:i', strtotime($submission['submittedAt']))) ?> WIT</td><td><span class="badge <?= str_starts_with($submission['emailStatus'], 'Terkirim') ? 'approved' : 'failed' ?>"><?= h($submission['emailStatus']) ?></span></td><td><span class="badge <?= $submission['status'] === 'Disetujui' ? 'approved' : 'pending' ?>"><?= h($submission['status']) ?></span><?php if ($submission['status'] === 'Disetujui'): ?><div class="muted" style="font-size:9px;margin-top:4px">oleh <?= h($submission['approvedBy']) ?></div><?php endif; ?></td><td><?php if (canApproveSubmission($user, $submission) && $submission['status'] === 'Menunggu approval'): ?><form method="post" onsubmit="return confirm('Setujui checklist ini?')"><input type="hidden" name="csrf" value="<?= $csrf ?>"><input type="hidden" name="action" value="approve"><input type="hidden" name="submission_id" value="<?= h($submission['id']) ?>"><button class="btn btn-primary btn-small" type="submit">✓ Setujui</button></form><?php else: ?><span class="muted"><?= $submission['status'] === 'Menunggu approval' ? 'Tidak ada aksi' : 'Selesai' ?></span><?php endif; ?></td></tr>
-                                <tr><td colspan="6"><details><summary style="cursor:pointer;color:#617080;font-size:10px">Lihat jawaban (<?= count($submission['answers']) ?>)</summary><div class="submission-detail"><?php foreach ($submission['answers'] as $index => $answer): ?><p><strong><?= $index + 1 ?>. <?= h($answer['question']) ?></strong><br>Jawaban: <?php if (($answer['type'] ?? 'yes_no') === 'text'): ?><span style="white-space:pre-wrap;overflow-wrap:anywhere"><?= h($answer['choice']) ?></span><?php else: ?><span class="badge <?= $answer['choice'] === 'Ya' ? 'approved' : '' ?>"><?= h($answer['choice']) ?></span><?php endif; ?><?php if (($answer['type'] ?? '') === 'verification' && $answer['choice'] === 'Tidak'): ?><br><span class="muted"><?= h($answer['verificationMessage'] ?? 'Peringatan') ?></span><br>Pilihan: <span class="badge"><?= h($answer['verificationAnswer'] ?? '') ?></span><?php endif; ?><?php if (($answer['type'] ?? 'yes_no') === 'yes_no' && $answer['choice'] === 'Ya'): ?><?php if (($answer['followup'] ?? '') !== ''): ?><br><?= h($answer['followup']) ?>: <?= h($answer['followupAnswer'] ?? '') ?><?php endif; ?><?php foreach ($answer['followupChoiceAnswers'] ?? [] as $followupChoiceAnswer): ?><br><?= h($followupChoiceAnswer['question']) ?>: <span class="badge"><?= h($followupChoiceAnswer['choice']) ?></span><?php endforeach; ?><?php endif; ?></p><?php endforeach; ?><p class="muted">Supervisor: <?= h($submission['supervisorName']) ?><?= $submission['approvedAt'] !== '' ? ' · Disetujui ' . h(date('d M Y, H:i', strtotime($submission['approvedAt']))) . ' WIT' : '' ?></p><?php if (($submission['approvalEmailStatus'] ?? '') !== ''): ?><p class="muted">Status email pemberitahuan ke responden: <span class="badge <?= str_starts_with($submission['approvalEmailStatus'], 'Terkirim') ? 'approved' : 'failed' ?>"><?= h($submission['approvalEmailStatus']) ?></span></p><?php endif; ?></div></details></td></tr>
+                                <tr<?= $page === 'my-submissions' && $submission['id'] === $requestedSubmissionId ? ' id="submission-' . h($submission['id']) . '"' : '' ?>><td><div class="person"><div class="person-dot"><?= h(strtoupper(substr($submission['respondent'], 0, 1))) ?></div><div><strong><?= h($submission['formTitle']) ?></strong><div class="muted" style="font-size:10px"><?= h($submission['respondent']) ?></div></div></div></td><td><?= h($submission['respondentEmail']) ?></td><td><?= h(date('d M Y, H:i', strtotime($submission['submittedAt']))) ?> WIT</td><td><span class="badge <?= str_starts_with($submission['emailStatus'], 'Terkirim') ? 'approved' : 'failed' ?>"><?= h($submission['emailStatus']) ?></span></td><td><span class="badge <?= $submission['status'] === 'Disetujui' ? 'approved' : 'pending' ?>"><?= h($submission['status']) ?></span><?php if ($submission['status'] === 'Disetujui'): ?><div class="muted" style="font-size:9px;margin-top:4px">oleh <?= h($submission['approvedBy']) ?></div><?php endif; ?></td><td><?php if (canApproveSubmission($user, $submission) && $submission['status'] === 'Menunggu approval'): ?><form method="post" onsubmit="return confirm('Setujui checklist ini?')"><input type="hidden" name="csrf" value="<?= $csrf ?>"><input type="hidden" name="action" value="approve"><input type="hidden" name="submission_id" value="<?= h($submission['id']) ?>"><button class="btn btn-primary btn-small" type="submit">✓ Setujui</button></form><?php else: ?><span class="muted"><?= $submission['status'] === 'Menunggu approval' ? 'Tidak ada aksi' : 'Selesai' ?></span><?php endif; ?></td></tr>
+                                <tr><td colspan="6"><details <?= $page === 'my-submissions' && $submission['id'] === $requestedSubmissionId ? 'open' : '' ?>><summary style="cursor:pointer;color:#617080;font-size:10px">Lihat jawaban (<?= count($submission['answers']) ?>)</summary><div class="submission-detail"><?php foreach ($submission['answers'] as $index => $answer): ?><p><strong><?= $index + 1 ?>. <?= h($answer['question']) ?></strong><br>Jawaban: <?php if (($answer['type'] ?? 'yes_no') === 'text'): ?><span style="white-space:pre-wrap;overflow-wrap:anywhere"><?= h($answer['choice']) ?></span><?php else: ?><span class="badge <?= $answer['choice'] === 'Ya' ? 'approved' : '' ?>"><?= h($answer['choice']) ?></span><?php endif; ?><?php if (($answer['type'] ?? '') === 'verification' && $answer['choice'] === 'Tidak'): ?><br><span class="muted"><?= h($answer['verificationMessage'] ?? 'Peringatan') ?></span><br>Pilihan: <span class="badge"><?= h($answer['verificationAnswer'] ?? '') ?></span><?php endif; ?><?php if (($answer['type'] ?? 'yes_no') === 'yes_no' && $answer['choice'] === 'Ya'): ?><?php if (($answer['followup'] ?? '') !== ''): ?><br><?= h($answer['followup']) ?>: <?= h($answer['followupAnswer'] ?? '') ?><?php endif; ?><?php foreach ($answer['followupChoiceAnswers'] ?? [] as $followupChoiceAnswer): ?><br><?= h($followupChoiceAnswer['question']) ?>: <span class="badge"><?= h($followupChoiceAnswer['choice']) ?></span><?php endforeach; ?><?php endif; ?></p><?php endforeach; ?><p class="muted">Supervisor: <?= h($submission['supervisorName']) ?><?= $submission['approvedAt'] !== '' ? ' · Disetujui ' . h(date('d M Y, H:i', strtotime($submission['approvedAt']))) . ' WIT' : '' ?></p><?php if (($submission['approvalEmailStatus'] ?? '') !== ''): ?><p class="muted">Status email pemberitahuan ke responden: <span class="badge <?= str_starts_with($submission['approvalEmailStatus'], 'Terkirim') ? 'approved' : 'failed' ?>"><?= h($submission['approvalEmailStatus']) ?></span></p><?php endif; ?></div></details></td></tr>
                             <?php endforeach; ?>
                         </tbody></table></div><?php endif; ?>
                     </section>
