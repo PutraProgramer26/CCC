@@ -8,6 +8,7 @@ function sendCccApprovalEmail(array $submission): void
     if ($homeDirectory !== false && trim($homeDirectory) !== '') {
         $mailConfigPaths[] = rtrim($homeDirectory, '\\/') . DIRECTORY_SEPARATOR . 'mail-API' . DIRECTORY_SEPARATOR . 'ccc-private' . DIRECTORY_SEPARATOR . 'mail-config.php';
     }
+    $mailConfigPaths[] = dirname(__DIR__) . DIRECTORY_SEPARATOR . 'mail-API' . DIRECTORY_SEPARATOR . 'ccc-private' . DIRECTORY_SEPARATOR . 'mail-config.php';
     $mailConfigPaths[] = dirname(__DIR__, 3) . DIRECTORY_SEPARATOR . 'mail-API' . DIRECTORY_SEPARATOR . 'ccc-private' . DIRECTORY_SEPARATOR . 'mail-config.php';
     $mailConfigPaths[] = dirname(__DIR__, 2) . DIRECTORY_SEPARATOR . 'ccc-private' . DIRECTORY_SEPARATOR . 'mail-config.php';
     $mailConfig = [];
