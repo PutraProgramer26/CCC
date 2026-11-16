@@ -3,14 +3,30 @@ declare(strict_types=1);
 
 function sendCccApprovalEmail(array $submission): void
 {
-    $accessToken = getenv('HOSTINGER_API_TOKEN');
-    $mailboxResourceId = getenv('HOSTINGER_MAILBOX_RESOURCE_ID');
-
-    if ($accessToken === false || trim($accessToken) === '795096d1f262c1bab68737cee1d46a023f2aca2c1c459ea3e15bc66a78bae886') {
-        throw new RuntimeException('HOSTINGER_API_TOKEN belum dikonfigurasi.');
+    $mailConfigPath = dirname(__DIR__, 2) . DIRECTORY_SEPARATOR . 'ccc-private' . DIRECTORY_SEPARATOR . 'mail-config.php';
+    $mailConfig = [];
+    if (is_file($mailConfigPath)) {
+        $loadedConfig = require $mailConfigPath;
+        if (!is_array($loadedConfig)) {
+            throw new RuntimeException('Konfigurasi email privat CCC harus mengembalikan array.');
+        }
+        $mailConfig = $loadedConfig;
     }
-    if ($mailboxResourceId === false || trim($mailboxResourceId) === 'ACbc4fc871d239ca707ccf83df34b5') {
-        throw new RuntimeException('HOSTINGER_MAILBOX_RESOURCE_ID belum dikonfigurasi.');
+
+    $accessToken = getenv('HOSTINGER_API_TOKEN');
+    if ($accessToken === false || trim($accessToken) === '') {
+        $accessToken = $mailConfig['HOSTINGER_API_TOKEN'] ?? '';
+    }
+    $mailboxResourceId = getenv('HOSTINGER_MAILBOX_RESOURCE_ID');
+    if ($mailboxResourceId === false || trim($mailboxResourceId) === '') {
+        $mailboxResourceId = $mailConfig['HOSTINGER_MAILBOX_RESOURCE_ID'] ?? '';
+    }
+
+    if (!is_string($accessToken) || trim($accessToken) === '') {
+        throw new RuntimeException('HOSTINGER_API_TOKEN belum dikonfigurasi di environment server atau konfigurasi email privat CCC.');
+    }
+    if (!is_string($mailboxResourceId) || trim($mailboxResourceId) === '') {
+        throw new RuntimeException('HOSTINGER_MAILBOX_RESOURCE_ID belum dikonfigurasi di environment server atau konfigurasi email privat CCC.');
     }
     if (!function_exists('curl_init')) {
         throw new RuntimeException('Ekstensi PHP cURL belum aktif.');
