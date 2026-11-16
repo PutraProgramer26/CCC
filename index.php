@@ -1044,26 +1044,6 @@ $csrf = h($_SESSION['csrf']);
             <header class="topbar"><?php if ($user): ?><div class="topbar-left"><button type="button" class="btn btn-light sidebar-toggle topbar-toggle" aria-label="Tampilkan sidebar" title="Tampilkan / sembunyikan sidebar" aria-controls="app-sidebar" aria-expanded="true">☰</button><div class="crumb">CCC <span style="padding:0 7px;color:#aeb8c4">/</span> <b><?= h($pageTitle) ?></b></div></div><div class="top-actions"><span class="badge"><?= h($role) ?></span><span class="muted" style="font-size:11px"><?= date('d M Y') ?></span></div><?php else: ?><a class="brand" href="index.php"><div class="brand-mark">C</div><div class="brand-name">CRITICAL CONTROL<span>CHECKLIST SYSTEM</span></div></a><a class="btn btn-light btn-small" href="index.php?page=login">Masuk</a><?php endif; ?></header>
             <div class="content">
                 <?php if ($flash): ?><div class="alert <?= h($flash['type']) ?>"><?= h($flash['message']) ?></div><?php endif; ?>
-                <?php if ($page === 'my-submissions' && $user): ?>
-                    <section class="panel" style="display:flex;justify-content:space-between;align-items:center;gap:14px;flex-wrap:wrap;margin-bottom:16px">
-                        <form method="get" style="display:flex;align-items:center;gap:9px;flex-wrap:wrap">
-                            <input type="hidden" name="page" value="my-submissions">
-                            <label for="history-page-size" style="font-size:12px;font-weight:600">Data per halaman</label>
-                            <select id="history-page-size" name="per_page">
-                                <?php foreach ($historyPageSizes as $pageSize): ?>
-                                    <option value="<?= $pageSize ?>" <?= $pageSize === $historyPageSize ? 'selected' : '' ?>><?= $pageSize ?> data</option>
-                                <?php endforeach; ?>
-                            </select>
-                            <button class="btn btn-light btn-small" type="submit">Terapkan</button>
-                        </form>
-                        <div style="display:flex;align-items:center;gap:10px;font-size:12px">
-                            <span><?= $historyFirstItem ?>–<?= $historyLastItem ?> dari <?= $historyTotal ?> data</span>
-                            <?php if ($historyPage > 1): ?><a class="btn btn-light btn-small" href="<?= h(historyPageUrl($historyPage - 1, $historyPageSize)) ?>">← Sebelumnya</a><?php endif; ?>
-                            <span>Halaman <?= $historyPage ?> / <?= $historyPageCount ?></span>
-                            <?php if ($historyPage < $historyPageCount): ?><a class="btn btn-light btn-small" href="<?= h(historyPageUrl($historyPage + 1, $historyPageSize)) ?>">Berikutnya →</a><?php endif; ?>
-                        </div>
-                    </section>
-                <?php endif; ?>
 
                 <?php if ($page === 'submitted' && !$user): ?>
                     <section class="panel" style="max-width:680px;margin:50px auto;text-align:center;padding:36px 24px">
@@ -1152,15 +1132,38 @@ $csrf = h($_SESSION['csrf']);
                     <?php if (!$visibleSubmissions): ?><div class="empty">Belum ada checklist yang dikirim.</div><?php else: ?><div class="table-wrap"><table><thead><tr><th>Checklist</th><th>Waktu dikirim</th><th>Supervisor</th><th>Status</th></tr></thead><tbody><?php foreach (array_slice($visibleSubmissions, 0, 5) as $submission): ?><tr><td><strong><?= h($submission['formTitle']) ?></strong></td><td><?= h(date('d M Y, H:i', strtotime($submission['submittedAt']))) ?> WIT</td><td><?= h($submission['supervisorName']) ?></td><td><span class="badge <?= $submission['status'] === 'Disetujui' ? 'approved' : 'pending' ?>"><?= h($submission['status']) ?></span></td></tr><?php endforeach; ?></tbody></table></div><?php endif; ?></div>
                 <?php elseif ($role === 'Respondent' && $page === 'my-submissions'): ?>
                     <div class="page-heading"><div><div class="eyebrow">Riwayat pengisian</div><h1>Riwayat saya</h1><p>Semua checklist yang Anda kirim, dengan status approval terbaru.</p></div><a class="btn btn-light" href="index.php?page=dashboard">← Kembali ke form</a></div>
-                    <?php if (!$historyPageSubmissions): ?>
-                        <div class="empty"><strong>Belum ada checklist</strong>Checklist yang Anda kirim akan tampil di sini.</div>
-                    <?php else: ?>
-                        <section class="panel"><div class="table-wrap"><table><thead><tr><th>Checklist</th><th>Waktu dikirim</th><th>Supervisor</th><th>Status approval</th></tr></thead><tbody>
+                    <section class="panel">
+                        <div class="panel-head" style="align-items:flex-start;flex-wrap:wrap">
+                            <div><h2 class="panel-title">Riwayat checklist</h2><div class="panel-subtitle">Waktu ditampilkan menurut zona waktu WIT (Asia/Jayapura).</div></div>
+                            <div style="display:flex;align-items:center;justify-content:flex-end;gap:12px;flex-wrap:wrap">
+                                <form method="get" style="display:flex;align-items:center;gap:7px;flex-wrap:wrap">
+                                    <input type="hidden" name="page" value="my-submissions">
+                                    <label for="history-page-size" style="font-size:11px;font-weight:600;color:var(--muted)">Tampilkan</label>
+                                    <select id="history-page-size" name="per_page" style="border:1px solid var(--line);border-radius:8px;padding:7px 9px;background:#fff;color:var(--ink);font-size:11px">
+                                        <?php foreach ($historyPageSizes as $pageSize): ?>
+                                            <option value="<?= $pageSize ?>" <?= $pageSize === $historyPageSize ? 'selected' : '' ?>><?= $pageSize ?> data</option>
+                                        <?php endforeach; ?>
+                                    </select>
+                                    <button class="btn btn-light btn-small" type="submit">Terapkan</button>
+                                </form>
+                                <div style="display:flex;align-items:center;gap:8px;font-size:11px;white-space:nowrap">
+                                    <span class="muted"><?= $historyFirstItem ?>–<?= $historyLastItem ?> dari <?= $historyTotal ?></span>
+                                    <?php if ($historyPage > 1): ?><a class="btn btn-light btn-small" href="<?= h(historyPageUrl($historyPage - 1, $historyPageSize)) ?>" aria-label="Halaman sebelumnya">←</a><?php endif; ?>
+                                    <span>Hal. <?= $historyPage ?>/<?= $historyPageCount ?></span>
+                                    <?php if ($historyPage < $historyPageCount): ?><a class="btn btn-light btn-small" href="<?= h(historyPageUrl($historyPage + 1, $historyPageSize)) ?>" aria-label="Halaman berikutnya">→</a><?php endif; ?>
+                                </div>
+                            </div>
+                        </div>
+                        <?php if (!$historyPageSubmissions): ?>
+                            <div class="empty"><strong>Belum ada checklist</strong>Checklist yang Anda kirim akan tampil di sini.</div>
+                        <?php else: ?>
+                        <div class="table-wrap"><table><thead><tr><th>Checklist</th><th>Waktu dikirim</th><th>Supervisor</th><th>Status approval</th></tr></thead><tbody>
                             <?php foreach ($historyPageSubmissions as $submission): ?>
                                 <tr><td><strong><?= h($submission['formTitle']) ?></strong></td><td><?= h(date('d M Y, H:i', strtotime($submission['submittedAt']))) ?> WIT</td><td><?= h($submission['supervisorName']) ?></td><td><span class="badge <?= $submission['status'] === 'Disetujui' ? 'approved' : 'pending' ?>"><?= h($submission['status']) ?></span></td></tr>
                             <?php endforeach; ?>
-                        </tbody></table></div></section>
-                    <?php endif; ?>
+                        </tbody></table></div>
+                        <?php endif; ?>
+                    </section>
                 <?php elseif ($page === 'edit-form' && $role === 'Administrator' && $editingForm): ?>
                     <div class="page-heading"><div><div class="eyebrow">Questionnaire management</div><h1>Edit form checklist</h1><p>Perbarui judul, deskripsi, pertanyaan, opsi, dan gambar pendukung.</p></div><a class="btn btn-light" href="index.php?page=forms">← Kembali ke form</a></div>
                     <div class="panel"><div class="panel-head"><div><h2 class="panel-title">Edit <?= h($editingForm['title']) ?></h2><div class="panel-subtitle">Riwayat checklist yang sudah dikirim tidak berubah saat form diedit.</div></div></div>
@@ -1299,7 +1302,30 @@ $csrf = h($_SESSION['csrf']);
                         <article class="stat-card"><div class="stat-top"><span>Disetujui</span><span class="stat-icon" style="background:#e5f5ee;color:#17734c">✓</span></div><div class="stat-number"><?= $approvedCount ?></div><div class="stat-foot">Checklist selesai disetujui</div></article>
                         <article class="stat-card"><div class="stat-top"><span><?= $role === 'Administrator' ? 'Supervisor aktif' : 'Notifikasi email' ?></span><span class="stat-icon" style="background:#edf1fa;color:#4c5f9a"><?= $role === 'Administrator' ? '♙' : '✉' ?></span></div><div class="stat-number"><?= $role === 'Administrator' ? $supervisorCount : $emailFailures ?></div><div class="stat-foot"><?= $role === 'Administrator' ? 'Akun penerima checklist' : 'Status email gagal / belum dikirim' ?></div></article>
                     </section>
-                    <section class="panel"><div class="panel-head"><div><h2 class="panel-title">Hasil pengisian terbaru</h2><div class="panel-subtitle">Waktu ditampilkan menurut zona waktu WIT (Asia/Jayapura).</div></div><a class="btn btn-light btn-small" href="index.php?page=my-submissions">Lihat semua</a></div>
+                    <section class="panel"><div class="panel-head" style="align-items:flex-start;flex-wrap:wrap"><div><h2 class="panel-title"><?= $page === 'my-submissions' ? 'Riwayat checklist' : 'Hasil pengisian terbaru' ?></h2><div class="panel-subtitle">Waktu ditampilkan menurut zona waktu WIT (Asia/Jayapura).</div></div>
+                        <?php if ($page === 'my-submissions'): ?>
+                            <div style="display:flex;align-items:center;justify-content:flex-end;gap:12px;flex-wrap:wrap">
+                                <form method="get" style="display:flex;align-items:center;gap:7px;flex-wrap:wrap">
+                                    <input type="hidden" name="page" value="my-submissions">
+                                    <label for="history-page-size" style="font-size:11px;font-weight:600;color:var(--muted)">Tampilkan</label>
+                                    <select id="history-page-size" name="per_page" style="border:1px solid var(--line);border-radius:8px;padding:7px 9px;background:#fff;color:var(--ink);font-size:11px">
+                                        <?php foreach ($historyPageSizes as $pageSize): ?>
+                                            <option value="<?= $pageSize ?>" <?= $pageSize === $historyPageSize ? 'selected' : '' ?>><?= $pageSize ?> data</option>
+                                        <?php endforeach; ?>
+                                    </select>
+                                    <button class="btn btn-light btn-small" type="submit">Terapkan</button>
+                                </form>
+                                <div style="display:flex;align-items:center;gap:8px;font-size:11px;white-space:nowrap">
+                                    <span class="muted"><?= $historyFirstItem ?>–<?= $historyLastItem ?> dari <?= $historyTotal ?></span>
+                                    <?php if ($historyPage > 1): ?><a class="btn btn-light btn-small" href="<?= h(historyPageUrl($historyPage - 1, $historyPageSize)) ?>" aria-label="Halaman sebelumnya">←</a><?php endif; ?>
+                                    <span>Hal. <?= $historyPage ?>/<?= $historyPageCount ?></span>
+                                    <?php if ($historyPage < $historyPageCount): ?><a class="btn btn-light btn-small" href="<?= h(historyPageUrl($historyPage + 1, $historyPageSize)) ?>" aria-label="Halaman berikutnya">→</a><?php endif; ?>
+                                </div>
+                            </div>
+                        <?php else: ?>
+                            <a class="btn btn-light btn-small" href="index.php?page=my-submissions">Lihat semua</a>
+                        <?php endif; ?>
+                    </div>
                         <?php if (!$visibleSubmissions): ?><div class="empty"><strong>Belum ada hasil pengisian</strong>Hasil checklist akan muncul di sini setelah responden mengirim form.</div><?php else: ?>
                         <div class="table-wrap"><table><thead><tr><th>Checklist / responden</th><th>Email responden</th><th>Waktu dikirim</th><th>Status email</th><th>Status approval</th><th>Aksi</th></tr></thead><tbody>
                             <?php foreach (($page === 'my-submissions' ? $historyPageSubmissions : array_slice($visibleSubmissions, 0, 12)) as $submission): ?>
