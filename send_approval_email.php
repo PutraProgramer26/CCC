@@ -1,7 +1,7 @@
 <?php
 declare(strict_types=1);
 
-function sendCccApprovalEmail(array $submission): void
+function sendCccMail(array $recipients, string $subject, string $text, string $html): void
 {
     $homeDirectory = getenv('HOME');
     $mailConfigPaths = [];
@@ -51,10 +51,85 @@ function sendCccApprovalEmail(array $submission): void
         throw new RuntimeException('Ekstensi PHP cURL belum aktif.');
     }
 
-    $recipient = (string) ($submission['supervisorEmail'] ?? '');
-    if (!filter_var($recipient, FILTER_VALIDATE_EMAIL)) {
-        throw new RuntimeException('Alamat email supervisor tidak valid.');
+    if ($recipients === []) {
+        throw new RuntimeException('Alamat email penerima tidak tersedia.');
     }
+    foreach ($recipients as &$recipient) {
+        if (!is_string($recipient) || !filter_var(trim($recipient), FILTER_VALIDATE_EMAIL)) {
+            throw new RuntimeException('Alamat email penerima tidak valid.');
+        }
+        $recipient = trim($recipient);
+    }
+    unset($recipient);
+
+    $payload = json_encode([
+        'to' => $recipients,
+        'displayName' => 'CCC Checklist',
+        'subject' => $subject,
+        'text' => $text,
+        'html' => $html,
+    ], JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES | JSON_THROW_ON_ERROR);
+
+    $endpoint = 'https://api.mail.hostinger.com/api/v1/mailboxes/'
+        . rawurlencode(trim($mailboxResourceId)) . '/send';
+    $curl = curl_init($endpoint);
+    if ($curl === false) {
+        throw new RuntimeException('Koneksi ke Hostinger Mail API tidak dapat dimulai.');
+    }
+
+    try {
+        $configured = curl_setopt_array($curl, [
+            CURLOPT_POST => true,
+            CURLOPT_POSTFIELDS => $payload,
+            CURLOPT_HTTPHEADER => [
+                'Authorization: Bearer ' . trim($accessToken),
+                'Content-Type: application/json',
+                'Accept: application/json',
+            ],
+            CURLOPT_RETURNTRANSFER => true,
+            CURLOPT_CONNECTTIMEOUT => 10,
+            CURLOPT_TIMEOUT => 30,
+            CURLOPT_SSL_VERIFYPEER => true,
+            CURLOPT_SSL_VERIFYHOST => 2,
+            CURLOPT_FOLLOWLOCATION => false,
+        ]);
+        if (!$configured) {
+            throw new RuntimeException('Pengaturan koneksi Hostinger Mail API gagal.');
+        }
+
+        $response = curl_exec($curl);
+        if ($response === false) {
+            throw new RuntimeException('Koneksi Hostinger Mail API gagal: ' . curl_error($curl));
+        }
+        $statusCode = (int) curl_getinfo($curl, CURLINFO_RESPONSE_CODE);
+        if ($statusCode < 200 || $statusCode >= 300) {
+            $apiError = json_decode($response, true);
+            $errorCode = is_array($apiError) && is_string($apiError['code'] ?? null)
+                ? (string) $apiError['code']
+                : '';
+            $errorMessage = is_array($apiError) && is_string($apiError['error'] ?? null)
+                ? trim((string) $apiError['error'])
+                : '';
+            if (function_exists('mb_substr')) {
+                $errorMessage = mb_substr($errorMessage, 0, 120, 'UTF-8');
+            } else {
+                $errorMessage = substr($errorMessage, 0, 120);
+            }
+            throw new RuntimeException(
+                'Hostinger Mail API menolak pengiriman (HTTP ' . $statusCode . ')'
+                . ($errorCode !== '' ? ' ' . $errorCode : '')
+                . ($errorMessage !== '' ? ': ' . $errorMessage : '')
+                . '.'
+            );
+        }
+    } finally {
+        curl_close($curl);
+    }
+}
+
+function sendCccApprovalEmail(array $submission): void
+{
+    $recipient = (string) ($submission['supervisorEmail'] ?? '');
 
     $escape = static fn(string $value): string => htmlspecialchars($value, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8');
     $formTitle = (string) ($submission['formTitle'] ?? 'Checklist');
@@ -146,67 +221,38 @@ function sendCccApprovalEmail(array $submission): void
         . '<p style="margin:24px 0 0;padding-top:16px;border-top:1px solid #e6eaf0;color:#6b7787;font-size:12px">Email otomatis dari CRITICAL CONTROL CHECKLIST.</p>'
         . '</div></body></html>';
 
-    $payload = json_encode([
-        'to' => [$recipient],
-        'displayName' => 'CCC Checklist',
-        'subject' => 'Permintaan approval checklist: ' . $formTitle,
-        'text' => $text,
-        'html' => $html,
-    ], JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES | JSON_THROW_ON_ERROR);
+    sendCccMail([$recipient], 'Permintaan approval checklist: ' . $formTitle, $text, $html);
+}
 
-    $endpoint = 'https://api.mail.hostinger.com/api/v1/mailboxes/'
-        . rawurlencode(trim($mailboxResourceId)) . '/send';
-    $curl = curl_init($endpoint);
-    if ($curl === false) {
-        throw new RuntimeException('Koneksi ke Hostinger Mail API tidak dapat dimulai.');
+function sendCccApprovedEmail(array $submission): void
+{
+    $recipient = (string) ($submission['respondentEmail'] ?? '');
+    $respondent = (string) ($submission['respondent'] ?? 'Responden');
+    $formTitle = (string) ($submission['formTitle'] ?? 'Checklist');
+    $supervisorName = trim((string) ($submission['approvedBy'] ?? ''));
+    if ($supervisorName === '') {
+        throw new RuntimeException('Nama supervisor yang menyetujui checklist tidak tersedia.');
     }
 
-    try {
-        $configured = curl_setopt_array($curl, [
-            CURLOPT_POST => true,
-            CURLOPT_POSTFIELDS => $payload,
-            CURLOPT_HTTPHEADER => [
-                'Authorization: Bearer ' . trim($accessToken),
-                'Content-Type: application/json',
-                'Accept: application/json',
-            ],
-            CURLOPT_RETURNTRANSFER => true,
-            CURLOPT_CONNECTTIMEOUT => 10,
-            CURLOPT_TIMEOUT => 30,
-            CURLOPT_SSL_VERIFYPEER => true,
-            CURLOPT_SSL_VERIFYHOST => 2,
-            CURLOPT_FOLLOWLOCATION => false,
-        ]);
-        if (!$configured) {
-            throw new RuntimeException('Pengaturan koneksi Hostinger Mail API gagal.');
-        }
+    $approvedAt = new DateTimeImmutable((string) ($submission['approvedAt'] ?? 'now'));
+    $approvedAtText = $approvedAt->setTimezone(new DateTimeZone('Asia/Jayapura'))->format('d-m-Y H:i:s') . ' WIT';
+    $escape = static fn(string $value): string => htmlspecialchars($value, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8');
+    $text = "Halo {$respondent},\n\n";
+    $text .= "Checklist \"{$formTitle}\" yang Anda kirim telah disetujui oleh supervisor {$supervisorName}.\n";
+    $text .= "Waktu persetujuan: {$approvedAtText}\n\nTerima kasih.";
 
-        $response = curl_exec($curl);
-        if ($response === false) {
-            throw new RuntimeException('Koneksi Hostinger Mail API gagal: ' . curl_error($curl));
-        }
-        $statusCode = (int) curl_getinfo($curl, CURLINFO_RESPONSE_CODE);
-        if ($statusCode < 200 || $statusCode >= 300) {
-            $apiError = json_decode($response, true);
-            $errorCode = is_array($apiError) && is_string($apiError['code'] ?? null)
-                ? (string) $apiError['code']
-                : '';
-            $errorMessage = is_array($apiError) && is_string($apiError['error'] ?? null)
-                ? trim((string) $apiError['error'])
-                : '';
-            if (function_exists('mb_substr')) {
-                $errorMessage = mb_substr($errorMessage, 0, 120, 'UTF-8');
-            } else {
-                $errorMessage = substr($errorMessage, 0, 120);
-            }
-            throw new RuntimeException(
-                'Hostinger Mail API menolak pengiriman (HTTP ' . $statusCode . ')'
-                . ($errorCode !== '' ? ' ' . $errorCode : '')
-                . ($errorMessage !== '' ? ': ' . $errorMessage : '')
-                . '.'
-            );
-        }
-    } finally {
-        curl_close($curl);
-    }
+    $html = '<!doctype html><html lang="id"><body style="margin:0;padding:24px;background:#f4f6fa;font:14px/1.6 Arial,sans-serif;color:#17212f">'
+        . '<div style="max-width:620px;margin:0 auto;padding:24px;background:#fff;border:1px solid #e6eaf0;border-radius:12px">'
+        . '<h1 style="margin:0 0 12px;font-size:21px;color:#0f766e">Checklist Anda telah disetujui</h1>'
+        . '<p>Halo ' . $escape($respondent) . ',</p>'
+        . '<p>Checklist yang Anda kirim telah disetujui oleh supervisor.</p>'
+        . '<table style="width:100%;border-collapse:collapse;margin:20px 0">'
+        . '<tr><td style="padding:7px 0;color:#6b7787;width:155px">Form checklist</td><td style="padding:7px 0"><strong>' . $escape($formTitle) . '</strong></td></tr>'
+        . '<tr><td style="padding:7px 0;color:#6b7787">Disetujui oleh</td><td style="padding:7px 0">' . $escape($supervisorName) . '</td></tr>'
+        . '<tr><td style="padding:7px 0;color:#6b7787">Waktu persetujuan</td><td style="padding:7px 0">' . $escape($approvedAtText) . '</td></tr>'
+        . '</table>'
+        . '<p style="margin:24px 0 0;padding-top:16px;border-top:1px solid #e6eaf0;color:#6b7787;font-size:12px">Email otomatis dari CRITICAL CONTROL CHECKLIST.</p>'
+        . '</div></body></html>';
+
+    sendCccMail([$recipient], 'Checklist Anda telah disetujui: ' . $formTitle, $text, $html);
 }
