@@ -11,16 +11,24 @@ function sendCccApprovalEmail(array $submission): void
     $mailConfigPaths[] = dirname(__DIR__, 3) . DIRECTORY_SEPARATOR . 'mail-API' . DIRECTORY_SEPARATOR . 'ccc-private' . DIRECTORY_SEPARATOR . 'mail-config.php';
     $mailConfigPaths[] = dirname(__DIR__, 2) . DIRECTORY_SEPARATOR . 'ccc-private' . DIRECTORY_SEPARATOR . 'mail-config.php';
     $mailConfig = [];
+    $mailConfigLoaded = false;
     foreach (array_unique($mailConfigPaths) as $mailConfigPath) {
         if (!is_file($mailConfigPath)) {
             continue;
+        }
+        if (!is_readable($mailConfigPath)) {
+            throw new RuntimeException('File mail-config.php ditemukan tetapi tidak dapat dibaca oleh PHP. Periksa izin akses file.');
         }
         $loadedConfig = require $mailConfigPath;
         if (!is_array($loadedConfig)) {
             throw new RuntimeException('Konfigurasi email privat CCC harus mengembalikan array.');
         }
         $mailConfig = $loadedConfig;
+        $mailConfigLoaded = true;
         break;
+    }
+    if (!$mailConfigLoaded) {
+        throw new RuntimeException('File mail-config.php tidak ditemukan pada lokasi konfigurasi privat CCC yang didukung.');
     }
 
     $accessToken = getenv('HOSTINGER_API_TOKEN');
@@ -33,10 +41,10 @@ function sendCccApprovalEmail(array $submission): void
     }
 
     if (!is_string($accessToken) || trim($accessToken) === '') {
-        throw new RuntimeException('HOSTINGER_API_TOKEN belum dikonfigurasi di environment server atau konfigurasi email privat CCC.');
+        throw new RuntimeException('mail-config.php berhasil dibaca, tetapi HOSTINGER_API_TOKEN tidak ada, kosong, atau bukan string.');
     }
     if (!is_string($mailboxResourceId) || trim($mailboxResourceId) === '') {
-        throw new RuntimeException('HOSTINGER_MAILBOX_RESOURCE_ID belum dikonfigurasi di environment server atau konfigurasi email privat CCC.');
+        throw new RuntimeException('mail-config.php berhasil dibaca, tetapi HOSTINGER_MAILBOX_RESOURCE_ID tidak ada, kosong, atau bukan string.');
     }
     if (!function_exists('curl_init')) {
         throw new RuntimeException('Ekstensi PHP cURL belum aktif.');
