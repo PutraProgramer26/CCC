@@ -672,7 +672,7 @@ $username = $_SESSION['user'] ?? '';
 $user = $data['users'][$username] ?? null;
 $flash = $_SESSION['flash'] ?? null;
 unset($_SESSION['flash']);
-$page = (string) ($_GET['page'] ?? 'dashboard');
+$page = (string) ($_GET['page'] ?? ($user ? 'dashboard' : 'public-forms'));
 $supervisors = array_filter($data['users'], static fn(array $item): bool => $item['role'] === 'Supervisor');
 $visibleSubmissions = array_values(array_filter($data['submissions'], static function (array $submission) use ($user): bool {
     if (!$user) {
@@ -709,7 +709,8 @@ $formHasSupervisorQuestion = $selectedForm !== null && count(array_filter(
     $selectedForm['questions'],
     static fn(array $question): bool => ($question['type'] ?? 'yes_no') === 'supervisor'
 )) > 0;
-$publicFormRequest = !$user && $page === 'fill' && $selectedForm !== null;
+$publicFormsRequest = !$user && $page === 'public-forms';
+$publicFormRequest = !$user && $page === 'fill';
 $publicSubmissionComplete = $page === 'submitted';
 $csrf = h($_SESSION['csrf']);
 ?>
@@ -738,7 +739,7 @@ $csrf = h($_SESSION['csrf']);
     </style>
 </head>
 <body>
-<?php if (!$user && !$publicFormRequest && !$publicSubmissionComplete): ?>
+<?php if (!$user && !$publicFormsRequest && !$publicFormRequest && !$publicSubmissionComplete): ?>
     <main class="login-page">
         <section class="login-aside">
             <div class="brand"><div class="brand-mark">C</div><div class="brand-name">CRITICAL CONTROL<span>CHECKLIST SYSTEM</span></div></div>
@@ -778,7 +779,7 @@ $csrf = h($_SESSION['csrf']);
     </script>
 <?php else:
     $role = $user['role'] ?? 'Public';
-    $pageTitles = ['dashboard' => 'Dashboard', 'forms' => 'Form checklist', 'edit-form' => 'Edit form', 'users' => 'Pengguna', 'my-submissions' => 'Riwayat pengisian', 'fill' => 'Isi checklist'];
+    $pageTitles = ['dashboard' => 'Dashboard', 'public-forms' => 'Form checklist', 'forms' => 'Form checklist', 'edit-form' => 'Edit form', 'users' => 'Pengguna', 'my-submissions' => 'Riwayat pengisian', 'fill' => 'Isi checklist'];
     $pageTitle = $pageTitles[$page] ?? 'Dashboard';
     $navItems = [];
     if ($role !== 'Respondent') {
@@ -808,7 +809,7 @@ $csrf = h($_SESSION['csrf']);
         </aside>
         <?php endif; ?>
         <main class="main">
-            <header class="topbar"><?php if ($user): ?><div class="topbar-left"><button type="button" class="btn btn-light sidebar-toggle topbar-toggle" aria-label="Tampilkan sidebar" title="Tampilkan / sembunyikan sidebar" aria-controls="app-sidebar" aria-expanded="true">☰</button><div class="crumb">CCC <span style="padding:0 7px;color:#aeb8c4">/</span> <b><?= h($pageTitle) ?></b></div></div><div class="top-actions"><span class="badge"><?= h($role) ?></span><span class="muted" style="font-size:11px"><?= date('d M Y') ?></span></div><?php else: ?><a class="brand" href="index.php"><div class="brand-mark">C</div><div class="brand-name">CRITICAL CONTROL<span>CHECKLIST SYSTEM</span></div></a><?php endif; ?></header>
+            <header class="topbar"><?php if ($user): ?><div class="topbar-left"><button type="button" class="btn btn-light sidebar-toggle topbar-toggle" aria-label="Tampilkan sidebar" title="Tampilkan / sembunyikan sidebar" aria-controls="app-sidebar" aria-expanded="true">☰</button><div class="crumb">CCC <span style="padding:0 7px;color:#aeb8c4">/</span> <b><?= h($pageTitle) ?></b></div></div><div class="top-actions"><span class="badge"><?= h($role) ?></span><span class="muted" style="font-size:11px"><?= date('d M Y') ?></span></div><?php else: ?><a class="brand" href="index.php"><div class="brand-mark">C</div><div class="brand-name">CRITICAL CONTROL<span>CHECKLIST SYSTEM</span></div></a><a class="btn btn-light btn-small" href="index.php?page=login">Masuk</a><?php endif; ?></header>
             <div class="content">
                 <?php if ($flash): ?><div class="alert <?= h($flash['type']) ?>"><?= h($flash['message']) ?></div><?php endif; ?>
 
@@ -819,6 +820,20 @@ $csrf = h($_SESSION['csrf']);
                         <h1 style="font-size:24px;margin:8px 0">Terima kasih</h1>
                         <p class="muted" style="margin:0">Hasil checklist Anda sudah direkam dan diteruskan ke supervisor untuk proses approval.</p>
                     </section>
+                <?php elseif ($publicFormsRequest): ?>
+                    <div class="fill-container">
+                        <div class="page-heading"><div><div class="eyebrow">Pengisian terbuka</div><h1>Form checklist tersedia</h1><p>Pilih form yang ingin Anda isi. Login tidak diperlukan.</p></div></div>
+                        <?php if (!$data['forms']): ?><div class="empty"><strong>Belum ada form tersedia</strong>Silakan kembali lagi nanti.</div><?php endif; ?>
+                        <?php foreach ($data['forms'] as $form): ?>
+                            <article class="panel">
+                                <?php if (($form['logo'] ?? '') !== ''): ?><img class="company-logo" src="<?= h(mediaUrl($form['logo'])) ?>" alt="Logo perusahaan <?= h($form['title']) ?>"><?php endif; ?>
+                                <h2 class="panel-title"><?= h($form['title']) ?></h2>
+                                <?php if (($form['description'] ?? '') !== ''): ?><p class="panel-subtitle"><?= h($form['description']) ?></p><?php endif; ?>
+                                <span class="badge" style="margin:10px 0 14px"><?= count($form['questions']) ?> pertanyaan</span>
+                                <div><a class="btn btn-primary" href="index.php?page=fill&amp;form=<?= h($form['id']) ?>">Isi form →</a></div>
+                            </article>
+                        <?php endforeach; ?>
+                    </div>
                 <?php elseif ($page === 'fill' && $selectedForm): ?>
                     <div class="fill-container">
                         <?php if ($user): ?><div style="margin-bottom:16px"><a class="muted" href="index.php" style="font-size:11px">← Kembali ke daftar form</a></div><?php endif; ?>
