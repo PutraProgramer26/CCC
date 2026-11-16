@@ -3,14 +3,24 @@ declare(strict_types=1);
 
 function sendCccApprovalEmail(array $submission): void
 {
-    $mailConfigPath = dirname(__DIR__, 2) . DIRECTORY_SEPARATOR . 'ccc-private' . DIRECTORY_SEPARATOR . 'mail-config.php';
+    $homeDirectory = getenv('HOME');
+    $mailConfigPaths = [];
+    if ($homeDirectory !== false && trim($homeDirectory) !== '') {
+        $mailConfigPaths[] = rtrim($homeDirectory, '\\/') . DIRECTORY_SEPARATOR . 'mail-API' . DIRECTORY_SEPARATOR . 'ccc-private' . DIRECTORY_SEPARATOR . 'mail-config.php';
+    }
+    $mailConfigPaths[] = dirname(__DIR__, 3) . DIRECTORY_SEPARATOR . 'mail-API' . DIRECTORY_SEPARATOR . 'ccc-private' . DIRECTORY_SEPARATOR . 'mail-config.php';
+    $mailConfigPaths[] = dirname(__DIR__, 2) . DIRECTORY_SEPARATOR . 'ccc-private' . DIRECTORY_SEPARATOR . 'mail-config.php';
     $mailConfig = [];
-    if (is_file($mailConfigPath)) {
+    foreach (array_unique($mailConfigPaths) as $mailConfigPath) {
+        if (!is_file($mailConfigPath)) {
+            continue;
+        }
         $loadedConfig = require $mailConfigPath;
         if (!is_array($loadedConfig)) {
             throw new RuntimeException('Konfigurasi email privat CCC harus mengembalikan array.');
         }
         $mailConfig = $loadedConfig;
+        break;
     }
 
     $accessToken = getenv('HOSTINGER_API_TOKEN');
