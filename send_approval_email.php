@@ -140,7 +140,7 @@ function sendCccApprovalEmail(array $submission): void
     $submittedAt = $submittedAt->setTimezone(new DateTimeZone('Asia/Jayapura'));
     $submittedAtText = $submittedAt->format('d-m-Y H:i:s') . ' WIT';
 
-    $text = "Hasil checklist baru menunggu approval.\n\n";
+    $text = "Checklist baru menunggu verifikasi.\n\n";
     $text .= "Form: {$formTitle}\nResponden: {$respondent}\nEmail responden: {$respondentEmail}\n";
     $text .= "Supervisor: {$supervisorName}\nWaktu pengisian: {$submittedAtText}\n\nJawaban:\n";
     $answerItems = '';
@@ -157,7 +157,7 @@ function sendCccApprovalEmail(array $submission): void
 
         $details = [];
         if (($answer['type'] ?? '') === 'supervisor') {
-            $details[] = 'Tujuan approval: ' . $choice;
+            $details[] = 'Tujuan verifikasi: ' . $choice;
         } elseif (($answer['type'] ?? '') === 'verification' && $choice === 'Tidak') {
             $details[] = 'Peringatan: ' . (string) ($answer['verificationMessage'] ?? '');
             $details[] = 'Pilihan verifikasi: ' . (string) ($answer['verificationAnswer'] ?? '');
@@ -209,14 +209,14 @@ function sendCccApprovalEmail(array $submission): void
             'page' => 'approve',
             'submission_id' => $submissionId,
         ], '', '&', PHP_QUERY_RFC3986);
-    $appLink = '<p style="margin:24px 0"><a href="' . $escape($approvalUrl) . '" style="display:inline-block;padding:11px 20px;background:#0f766e;color:#fff;text-decoration:none;border-radius:8px;font-weight:700">Approve</a></p>'
-        . '<p style="margin:0 0 20px;color:#6b7787;font-size:12px">Anda harus login. Setelah login, checklist ini akan langsung terbuka untuk ditinjau. Approval tetap dilakukan di dalam sistem.</p>';
-    $text .= "Buka checklist untuk ditinjau dan disetujui:\n{$approvalUrl}\n"
+    $appLink = '<p style="margin:24px 0"><a href="' . $escape($approvalUrl) . '" style="display:inline-block;padding:11px 20px;background:#0f766e;color:#fff;text-decoration:none;border-radius:8px;font-weight:700">Verify</a></p>'
+        . '<p style="margin:0 0 20px;color:#6b7787;font-size:12px">Anda harus login. Setelah login, checklist ini akan langsung terbuka untuk ditinjau. Verifikasi tetap dilakukan di dalam sistem.</p>';
+    $text .= "Buka checklist untuk ditinjau dan diverifikasi:\n{$approvalUrl}\n"
         . "Login diperlukan. Setelah login, checklist ini akan langsung terbuka untuk ditinjau.\n";
 
     $html = '<!doctype html><html lang="id"><body style="margin:0;padding:24px;background:#f4f6fa;font:14px/1.6 Arial,sans-serif;color:#17212f">'
         . '<div style="max-width:680px;margin:0 auto;padding:24px;background:#fff;border:1px solid #e6eaf0;border-radius:12px">'
-        . '<h1 style="margin:0 0 8px;font-size:21px;color:#0f766e">Checklist menunggu approval</h1>'
+        . '<h1 style="margin:0 0 8px;font-size:21px;color:#0f766e">Checklist menunggu verifikasi</h1>'
         . '<p style="margin:0 0 20px;color:#6b7787">Hasil pengisian baru telah dikirim kepada Anda untuk ditinjau.</p>'
         . '<table style="width:100%;border-collapse:collapse;margin-bottom:22px">'
         . '<tr><td style="padding:7px 0;color:#6b7787;width:155px">Form</td><td style="padding:7px 0"><strong>' . $escape($formTitle) . '</strong></td></tr>'
@@ -229,7 +229,7 @@ function sendCccApprovalEmail(array $submission): void
         . '<p style="margin:24px 0 0;padding-top:16px;border-top:1px solid #e6eaf0;color:#6b7787;font-size:12px">Email otomatis dari CRITICAL CONTROL CHECKLIST.</p>'
         . '</div></body></html>';
 
-    sendCccMail([$recipient], 'Permintaan approval checklist: ' . $formTitle, $text, $html);
+    sendCccMail([$recipient], 'Permintaan verifikasi checklist: ' . $formTitle, $text, $html);
 }
 
 function sendCccApprovedEmail(array $submission): void
@@ -239,28 +239,28 @@ function sendCccApprovedEmail(array $submission): void
     $formTitle = (string) ($submission['formTitle'] ?? 'Checklist');
     $supervisorName = trim((string) ($submission['approvedBy'] ?? ''));
     if ($supervisorName === '') {
-        throw new RuntimeException('Nama supervisor yang menyetujui checklist tidak tersedia.');
+        throw new RuntimeException('Nama supervisor yang memverifikasi checklist tidak tersedia.');
     }
 
     $approvedAt = new DateTimeImmutable((string) ($submission['approvedAt'] ?? 'now'));
     $approvedAtText = $approvedAt->setTimezone(new DateTimeZone('Asia/Jayapura'))->format('d-m-Y H:i:s') . ' WIT';
     $escape = static fn(string $value): string => htmlspecialchars($value, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8');
     $text = "Halo {$respondent},\n\n";
-    $text .= "Checklist \"{$formTitle}\" yang Anda kirim telah disetujui oleh supervisor {$supervisorName}.\n";
-    $text .= "Waktu persetujuan: {$approvedAtText}\n\nTerima kasih.";
+    $text .= "Checklist \"{$formTitle}\" yang Anda kirim telah diverifikasi oleh supervisor {$supervisorName}.\n";
+    $text .= "Waktu verifikasi: {$approvedAtText}\n\nTerima kasih.";
 
     $html = '<!doctype html><html lang="id"><body style="margin:0;padding:24px;background:#f4f6fa;font:14px/1.6 Arial,sans-serif;color:#17212f">'
         . '<div style="max-width:620px;margin:0 auto;padding:24px;background:#fff;border:1px solid #e6eaf0;border-radius:12px">'
-        . '<h1 style="margin:0 0 12px;font-size:21px;color:#0f766e">Checklist Anda telah disetujui</h1>'
+        . '<h1 style="margin:0 0 12px;font-size:21px;color:#0f766e">Checklist Anda telah diverifikasi</h1>'
         . '<p>Halo ' . $escape($respondent) . ',</p>'
-        . '<p>Checklist yang Anda kirim telah disetujui oleh supervisor.</p>'
+        . '<p>Checklist yang Anda kirim telah diverifikasi oleh supervisor.</p>'
         . '<table style="width:100%;border-collapse:collapse;margin:20px 0">'
         . '<tr><td style="padding:7px 0;color:#6b7787;width:155px">Form checklist</td><td style="padding:7px 0"><strong>' . $escape($formTitle) . '</strong></td></tr>'
-        . '<tr><td style="padding:7px 0;color:#6b7787">Disetujui oleh</td><td style="padding:7px 0">' . $escape($supervisorName) . '</td></tr>'
-        . '<tr><td style="padding:7px 0;color:#6b7787">Waktu persetujuan</td><td style="padding:7px 0">' . $escape($approvedAtText) . '</td></tr>'
+        . '<tr><td style="padding:7px 0;color:#6b7787">Diverifikasi oleh</td><td style="padding:7px 0">' . $escape($supervisorName) . '</td></tr>'
+        . '<tr><td style="padding:7px 0;color:#6b7787">Waktu verifikasi</td><td style="padding:7px 0">' . $escape($approvedAtText) . '</td></tr>'
         . '</table>'
         . '<p style="margin:24px 0 0;padding-top:16px;border-top:1px solid #e6eaf0;color:#6b7787;font-size:12px">Email otomatis dari CRITICAL CONTROL CHECKLIST.</p>'
         . '</div></body></html>';
 
-    sendCccMail([$recipient], 'Checklist Anda telah disetujui: ' . $formTitle, $text, $html);
+    sendCccMail([$recipient], 'Checklist Anda telah diverifikasi: ' . $formTitle, $text, $html);
 }

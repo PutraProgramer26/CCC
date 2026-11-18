@@ -34,6 +34,15 @@ function h(string $value): string
     return htmlspecialchars($value, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8');
 }
 
+function checklistStatusLabel(string $status): string
+{
+    return match ($status) {
+        'Menunggu approval' => 'Pending Verified',
+        'Disetujui' => 'Verified',
+        default => $status,
+    };
+}
+
 function checklistAnswerLines(array $submission): array
 {
     $lines = [];
@@ -120,9 +129,9 @@ function createChecklistExcel(array $submissions): string
         'Email responden',
         'Waktu dikirim (WIT)',
         'Supervisor',
-        'Status approval',
-        'Disetujui oleh',
-        'Waktu disetujui (WIT)',
+        'Status verifikasi',
+        'Diverifikasi oleh',
+        'Waktu diverifikasi (WIT)',
         'Jawaban checklist',
     ];
     $rows = [$columns];
@@ -134,7 +143,7 @@ function createChecklistExcel(array $submissions): string
             (string) $submission['respondentEmail'],
             date('d-m-Y H:i', strtotime((string) $submission['submittedAt'])) . ' WIT',
             (string) $submission['supervisorName'],
-            (string) $submission['status'],
+            checklistStatusLabel((string) $submission['status']),
             (string) $submission['approvedBy'],
             $submission['approvedAt'] !== ''
                 ? date('d-m-Y H:i', strtotime((string) $submission['approvedAt'])) . ' WIT'
@@ -259,7 +268,7 @@ function createChecklistPdf(array $submissions): string
             . ' | Email: ' . (string) $submission['respondentEmail'];
         $lines[] = 'Dikirim: ' . date('d-m-Y H:i', strtotime((string) $submission['submittedAt'])) . ' WIT'
             . ' | Supervisor: ' . (string) $submission['supervisorName'];
-        $lines[] = 'Approval: ' . (string) $submission['status']
+        $lines[] = 'Status verifikasi: ' . checklistStatusLabel((string) $submission['status'])
             . ($submission['approvedBy'] !== '' ? ' oleh ' . (string) $submission['approvedBy'] : '')
             . ($submission['approvedAt'] !== ''
                 ? ' pada ' . date('d-m-Y H:i', strtotime((string) $submission['approvedAt'])) . ' WIT'
@@ -1002,7 +1011,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             if ($role !== $account['role']) {
                 foreach ($data['submissions'] as $submission) {
                     if ($submission['supervisor'] === $username && $submission['status'] === 'Menunggu approval') {
-                        throw new RuntimeException('Role tidak dapat diubah karena akun ini masih memiliki checklist yang menunggu approval.');
+                        throw new RuntimeException('Role tidak dapat diubah karena akun ini masih memiliki checklist yang menunggu verifikasi.');
                     }
                 }
             }
@@ -1265,7 +1274,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     continue;
                 }
                 if (!canApproveSubmission($currentUser, $submission)) {
-                    throw new RuntimeException('Hanya administrator atau supervisor terpilih yang dapat menyetujui checklist ini.');
+                    throw new RuntimeException('Hanya administrator atau supervisor terpilih yang dapat memverifikasi checklist ini.');
                 }
                 if ($submission['status'] !== 'Menunggu approval') {
                     throw new RuntimeException('Checklist ini sudah diproses sebelumnya.');
@@ -1298,10 +1307,10 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 }
                 saveData($dataFile, $data);
                 setFlash($emailError === '' ? 'success' : 'warning', $emailError === ''
-                    ? 'Checklist berhasil disetujui dan pemberitahuan email telah dikirim ke responden.'
-                    : 'Checklist berhasil disetujui, tetapi email pemberitahuan ke responden gagal dikirim: ' . $emailError);
+                    ? 'Checklist berhasil diverifikasi dan pemberitahuan email telah dikirim ke responden.'
+                    : 'Checklist berhasil diverifikasi, tetapi email pemberitahuan ke responden gagal dikirim: ' . $emailError);
             } else {
-                setFlash('success', 'Checklist berhasil disetujui.');
+                setFlash('success', 'Checklist berhasil diverifikasi.');
             }
             redirectTo('page=dashboard');
         }
@@ -1702,9 +1711,9 @@ $csrf = h($_SESSION['csrf']);
                     <?php if (!$data['forms']): ?><div class="empty"><strong>Belum ada checklist</strong>Administrator belum membuat form untuk diisi.</div><?php endif; ?>
                     <?php foreach ($data['forms'] as $form): ?><article class="panel" style="display:flex;justify-content:space-between;align-items:center;gap:18px"><div><h2 class="panel-title"><?= h($form['title']) ?></h2><p class="panel-subtitle"><?= h($form['description']) ?></p><span class="badge" style="margin-top:10px"><?= count($form['questions']) ?> pertanyaan</span></div><a class="btn btn-primary" href="index.php?page=fill&amp;form=<?= h($form['id']) ?>">Isi form →</a></article><?php endforeach; ?>
                     <div class="panel"><div class="panel-head"><div><h2 class="panel-title">Status pengisian terbaru</h2><div class="panel-subtitle">Pantau checklist yang telah Anda kirim.</div></div><a class="btn btn-light btn-small" href="index.php?page=my-submissions">Semua riwayat</a></div>
-                    <?php if (!$visibleSubmissions): ?><div class="empty">Belum ada checklist yang dikirim.</div><?php else: ?><div class="table-wrap"><table><thead><tr><th>Checklist</th><th>Waktu dikirim</th><th>Supervisor</th><th>Status</th></tr></thead><tbody><?php foreach (array_slice($visibleSubmissions, 0, 5) as $submission): ?><tr><td><strong><?= h($submission['formTitle']) ?></strong></td><td><?= h(date('d M Y, H:i', strtotime($submission['submittedAt']))) ?> WIT</td><td><?= h($submission['supervisorName']) ?></td><td><span class="badge <?= $submission['status'] === 'Disetujui' ? 'approved' : 'pending' ?>"><?= h($submission['status']) ?></span></td></tr><?php endforeach; ?></tbody></table></div><?php endif; ?></div>
+                    <?php if (!$visibleSubmissions): ?><div class="empty">Belum ada checklist yang dikirim.</div><?php else: ?><div class="table-wrap"><table><thead><tr><th>Checklist</th><th>Waktu dikirim</th><th>Supervisor</th><th>Status verifikasi</th></tr></thead><tbody><?php foreach (array_slice($visibleSubmissions, 0, 5) as $submission): ?><tr><td><strong><?= h($submission['formTitle']) ?></strong></td><td><?= h(date('d M Y, H:i', strtotime($submission['submittedAt']))) ?> WIT</td><td><?= h($submission['supervisorName']) ?></td><td><span class="badge <?= $submission['status'] === 'Disetujui' ? 'approved' : 'pending' ?>"><?= h(checklistStatusLabel($submission['status'])) ?></span></td></tr><?php endforeach; ?></tbody></table></div><?php endif; ?></div>
                 <?php elseif ($role === 'Respondent' && $page === 'my-submissions'): ?>
-                    <div class="page-heading"><div><div class="eyebrow">Riwayat pengisian</div><h1>Riwayat saya</h1><p>Semua checklist yang Anda kirim, dengan status approval terbaru.</p></div><a class="btn btn-light" href="index.php?page=dashboard">← Kembali ke form</a></div>
+                    <div class="page-heading"><div><div class="eyebrow">Riwayat pengisian</div><h1>Riwayat saya</h1><p>Semua checklist yang Anda kirim, dengan status verifikasi terbaru.</p></div><a class="btn btn-light" href="index.php?page=dashboard">← Kembali ke form</a></div>
                     <section class="panel">
                         <div class="panel-head" style="align-items:flex-start;flex-wrap:wrap">
                             <div><h2 class="panel-title">Riwayat checklist</h2><div class="panel-subtitle">Waktu ditampilkan menurut zona waktu WIT (Asia/Jayapura).</div></div>
@@ -1730,9 +1739,9 @@ $csrf = h($_SESSION['csrf']);
                         <?php if (!$historyPageSubmissions): ?>
                             <div class="empty"><strong>Belum ada checklist</strong>Checklist yang Anda kirim akan tampil di sini.</div>
                         <?php else: ?>
-                        <div class="table-wrap"><table><thead><tr><th>Checklist</th><th>Waktu dikirim</th><th>Supervisor</th><th>Status approval</th></tr></thead><tbody>
+                        <div class="table-wrap"><table><thead><tr><th>Checklist</th><th>Waktu dikirim</th><th>Supervisor</th><th>Status verifikasi</th></tr></thead><tbody>
                             <?php foreach ($historyPageSubmissions as $submission): ?>
-                                <tr><td><strong><?= h($submission['formTitle']) ?></strong></td><td><?= h(date('d M Y, H:i', strtotime($submission['submittedAt']))) ?> WIT</td><td><?= h($submission['supervisorName']) ?></td><td><span class="badge <?= $submission['status'] === 'Disetujui' ? 'approved' : 'pending' ?>"><?= h($submission['status']) ?></span></td></tr>
+                                <tr><td><strong><?= h($submission['formTitle']) ?></strong></td><td><?= h(date('d M Y, H:i', strtotime($submission['submittedAt']))) ?> WIT</td><td><?= h($submission['supervisorName']) ?></td><td><span class="badge <?= $submission['status'] === 'Disetujui' ? 'approved' : 'pending' ?>"><?= h(checklistStatusLabel($submission['status'])) ?></span></td></tr>
                             <?php endforeach; ?>
                         </tbody></table></div>
                         <?php endif; ?>
@@ -1868,7 +1877,7 @@ $csrf = h($_SESSION['csrf']);
                                             <button class="btn btn-danger btn-small" type="submit">Hapus</button>
                                         </form>
                                     <?php else: ?>
-                                        <span class="help"><?= $accountUsername === $user['username'] ? 'Akun aktif' : ($isLastAdministrator ? 'Admin terakhir' : ($cannotDeleteLastActiveAdministrator ? 'Admin aktif terakhir' : 'Approval tertunda')) ?></span>
+                                        <span class="help"><?= $accountUsername === $user['username'] ? 'Akun aktif' : ($isLastAdministrator ? 'Admin terakhir' : ($cannotDeleteLastActiveAdministrator ? 'Admin aktif terakhir' : 'Verifikasi tertunda')) ?></span>
                                     <?php endif; ?>
                                 </td>
                             </tr>
@@ -1898,11 +1907,11 @@ $csrf = h($_SESSION['csrf']);
                             <?php endforeach; ?>
                         </section>
                     <?php endif; ?>
-                    <div class="page-heading"><div><div class="eyebrow"><?= $role === 'Administrator' ? 'Overview · All operations' : 'Review · Assigned checklists' ?></div><h1><?= $page === 'my-submissions' ? 'Riwayat checklist' : 'Dashboard' ?></h1><p><?= $role === 'Administrator' ? 'Pantau jawaban responden, status persetujuan, dan notifikasi email.' : 'Tinjau dan setujui checklist yang ditujukan kepada Anda.' ?></p></div><?php if ($role === 'Administrator'): ?><a class="btn btn-primary" href="index.php?page=forms">＋ Kelola form</a><?php endif; ?></div>
+                    <div class="page-heading"><div><div class="eyebrow"><?= $role === 'Administrator' ? 'Overview · All operations' : 'Review · Assigned checklists' ?></div><h1><?= $page === 'my-submissions' ? 'Riwayat checklist' : 'Dashboard' ?></h1><p><?= $role === 'Administrator' ? 'Pantau jawaban responden, status verifikasi, dan notifikasi email.' : 'Verifikasi checklist yang ditujukan kepada Anda.' ?></p></div><?php if ($role === 'Administrator'): ?><a class="btn btn-primary" href="index.php?page=forms">＋ Kelola form</a><?php endif; ?></div>
                     <section class="cards">
                         <article class="stat-card"><div class="stat-top"><span>Total checklist</span><span class="stat-icon">▤</span></div><div class="stat-number"><?= $allCount ?></div><div class="stat-foot">Seluruh pengisian yang tercatat</div></article>
-                        <article class="stat-card"><div class="stat-top"><span>Menunggu approval</span><span class="stat-icon" style="background:#fff3dc;color:#a76b00">◷</span></div><div class="stat-number"><?= $pendingCount ?></div><div class="stat-foot">Perlu ditinjau supervisor</div></article>
-                        <article class="stat-card"><div class="stat-top"><span>Disetujui</span><span class="stat-icon" style="background:#e5f5ee;color:#17734c">✓</span></div><div class="stat-number"><?= $approvedCount ?></div><div class="stat-foot">Checklist selesai disetujui</div></article>
+                        <article class="stat-card"><div class="stat-top"><span>Pending Verified</span><span class="stat-icon" style="background:#fff3dc;color:#a76b00">◷</span></div><div class="stat-number"><?= $pendingCount ?></div><div class="stat-foot">Perlu diverifikasi supervisor</div></article>
+                        <article class="stat-card"><div class="stat-top"><span>Verified</span><span class="stat-icon" style="background:#e5f5ee;color:#17734c">✓</span></div><div class="stat-number"><?= $approvedCount ?></div><div class="stat-foot">Checklist selesai diverifikasi</div></article>
                         <article class="stat-card"><div class="stat-top"><span><?= $role === 'Administrator' ? 'Supervisor aktif' : 'Notifikasi email' ?></span><span class="stat-icon" style="background:#edf1fa;color:#4c5f9a"><?= $role === 'Administrator' ? '♙' : '✉' ?></span></div><div class="stat-number"><?= $role === 'Administrator' ? $supervisorCount : $emailFailures ?></div><div class="stat-foot"><?= $role === 'Administrator' ? 'Akun penerima checklist' : 'Status email gagal / belum dikirim' ?></div></article>
                     </section>
                     <section class="panel"><div class="panel-head" style="align-items:flex-start;flex-wrap:wrap"><div><h2 class="panel-title"><?= $page === 'my-submissions' ? 'Riwayat checklist' : 'Hasil pengisian terbaru' ?></h2><div class="panel-subtitle">Waktu ditampilkan menurut zona waktu WIT (Asia/Jayapura).</div></div>
@@ -1936,10 +1945,10 @@ $csrf = h($_SESSION['csrf']);
                         <?php endif; ?>
                     </div>
                         <?php if (!$visibleSubmissions): ?><div class="empty"><strong>Belum ada hasil pengisian</strong>Hasil checklist akan muncul di sini setelah responden mengirim form.</div><?php else: ?>
-                        <div class="table-wrap"><table><thead><tr><th>Checklist / responden</th><th>Email responden</th><th>Waktu dikirim</th><th>Status email</th><th>Status approval</th><th>Aksi</th></tr></thead><tbody>
+                        <div class="table-wrap"><table><thead><tr><th>Checklist / responden</th><th>Email responden</th><th>Waktu dikirim</th><th>Status email</th><th>Status verifikasi</th><th>Aksi</th></tr></thead><tbody>
                             <?php foreach (($page === 'my-submissions' ? $historyPageSubmissions : array_slice($visibleSubmissions, 0, 12)) as $submission): ?>
-                                <tr<?= $page === 'my-submissions' && $submission['id'] === $requestedSubmissionId ? ' id="submission-' . h($submission['id']) . '"' : '' ?>><td><div class="person"><div class="person-dot"><?= h(strtoupper(substr($submission['respondent'], 0, 1))) ?></div><div><strong><?= h($submission['formTitle']) ?></strong><div class="muted" style="font-size:10px"><?= h($submission['respondent']) ?></div></div></div></td><td><?= h($submission['respondentEmail']) ?></td><td><?= h(date('d M Y, H:i', strtotime($submission['submittedAt']))) ?> WIT</td><td><span class="badge <?= str_starts_with($submission['emailStatus'], 'Terkirim') ? 'approved' : 'failed' ?>"><?= h($submission['emailStatus']) ?></span></td><td><span class="badge <?= $submission['status'] === 'Disetujui' ? 'approved' : 'pending' ?>"><?= h($submission['status']) ?></span><?php if ($submission['status'] === 'Disetujui'): ?><div class="muted" style="font-size:9px;margin-top:4px">oleh <?= h($submission['approvedBy']) ?></div><?php endif; ?></td><td><?php if (canApproveSubmission($user, $submission) && $submission['status'] === 'Menunggu approval'): ?><form method="post" onsubmit="return confirm('Setujui checklist ini?')"><input type="hidden" name="csrf" value="<?= $csrf ?>"><input type="hidden" name="action" value="approve"><input type="hidden" name="submission_id" value="<?= h($submission['id']) ?>"><button class="btn btn-primary btn-small" type="submit">✓ Setujui</button></form><?php else: ?><span class="muted"><?= $submission['status'] === 'Menunggu approval' ? 'Tidak ada aksi' : 'Selesai' ?></span><?php endif; ?></td></tr>
-                                <tr><td colspan="6"><details <?= $page === 'my-submissions' && $submission['id'] === $requestedSubmissionId ? 'open' : '' ?>><summary style="cursor:pointer;color:#617080;font-size:10px">Lihat jawaban (<?= count($submission['answers']) ?>)</summary><div class="submission-detail"><?php foreach ($submission['answers'] as $index => $answer): ?><p><strong><?= $index + 1 ?>. <?= h($answer['question']) ?></strong><br>Jawaban: <?php if (($answer['type'] ?? 'yes_no') === 'text'): ?><span style="white-space:pre-wrap;overflow-wrap:anywhere"><?= h($answer['choice']) ?></span><?php else: ?><span class="badge <?= $answer['choice'] === 'Ya' ? 'approved' : '' ?>"><?= h($answer['choice']) ?></span><?php endif; ?><?php if (($answer['type'] ?? '') === 'verification' && $answer['choice'] === 'Tidak'): ?><br><span class="muted"><?= h($answer['verificationMessage'] ?? 'Peringatan') ?></span><br>Pilihan: <span class="badge"><?= h($answer['verificationAnswer'] ?? '') ?></span><?php endif; ?><?php if (($answer['type'] ?? 'yes_no') === 'yes_no' && $answer['choice'] === 'Ya'): ?><?php if (($answer['followup'] ?? '') !== ''): ?><br><?= h($answer['followup']) ?>: <?= h($answer['followupAnswer'] ?? '') ?><?php endif; ?><?php foreach ($answer['followupChoiceAnswers'] ?? [] as $followupChoiceAnswer): ?><br><?= h($followupChoiceAnswer['question']) ?>: <span class="badge"><?= h($followupChoiceAnswer['choice']) ?></span><?php endforeach; ?><?php endif; ?></p><?php endforeach; ?><p class="muted">Supervisor: <?= h($submission['supervisorName']) ?><?= $submission['approvedAt'] !== '' ? ' · Disetujui ' . h(date('d M Y, H:i', strtotime($submission['approvedAt']))) . ' WIT' : '' ?></p><?php if (($submission['approvalEmailStatus'] ?? '') !== ''): ?><p class="muted">Status email pemberitahuan ke responden: <span class="badge <?= str_starts_with($submission['approvalEmailStatus'], 'Terkirim') ? 'approved' : 'failed' ?>"><?= h($submission['approvalEmailStatus']) ?></span></p><?php endif; ?></div></details></td></tr>
+                                <tr<?= $page === 'my-submissions' && $submission['id'] === $requestedSubmissionId ? ' id="submission-' . h($submission['id']) . '"' : '' ?>><td><div class="person"><div class="person-dot"><?= h(strtoupper(substr($submission['respondent'], 0, 1))) ?></div><div><strong><?= h($submission['formTitle']) ?></strong><div class="muted" style="font-size:10px"><?= h($submission['respondent']) ?></div></div></div></td><td><?= h($submission['respondentEmail']) ?></td><td><?= h(date('d M Y, H:i', strtotime($submission['submittedAt']))) ?> WIT</td><td><span class="badge <?= str_starts_with($submission['emailStatus'], 'Terkirim') ? 'approved' : 'failed' ?>"><?= h($submission['emailStatus']) ?></span></td><td><span class="badge <?= $submission['status'] === 'Disetujui' ? 'approved' : 'pending' ?>"><?= h(checklistStatusLabel($submission['status'])) ?></span><?php if ($submission['status'] === 'Disetujui'): ?><div class="muted" style="font-size:9px;margin-top:4px">Diverifikasi oleh <?= h($submission['approvedBy']) ?></div><?php endif; ?></td><td><?php if (canApproveSubmission($user, $submission) && $submission['status'] === 'Menunggu approval'): ?><form method="post" onsubmit="return confirm('Verifikasi checklist ini?')"><input type="hidden" name="csrf" value="<?= $csrf ?>"><input type="hidden" name="action" value="approve"><input type="hidden" name="submission_id" value="<?= h($submission['id']) ?>"><button class="btn btn-primary btn-small" type="submit">✓ Verify</button></form><?php else: ?><span class="muted"><?= $submission['status'] === 'Menunggu approval' ? 'Tidak ada aksi' : 'Selesai' ?></span><?php endif; ?></td></tr>
+                                <tr><td colspan="6"><details <?= $page === 'my-submissions' && $submission['id'] === $requestedSubmissionId ? 'open' : '' ?>><summary style="cursor:pointer;color:#617080;font-size:10px">Lihat jawaban (<?= count($submission['answers']) ?>)</summary><div class="submission-detail"><?php foreach ($submission['answers'] as $index => $answer): ?><p><strong><?= $index + 1 ?>. <?= h($answer['question']) ?></strong><br>Jawaban: <?php if (($answer['type'] ?? 'yes_no') === 'text'): ?><span style="white-space:pre-wrap;overflow-wrap:anywhere"><?= h($answer['choice']) ?></span><?php else: ?><span class="badge <?= $answer['choice'] === 'Ya' ? 'approved' : '' ?>"><?= h($answer['choice']) ?></span><?php endif; ?><?php if (($answer['type'] ?? '') === 'verification' && $answer['choice'] === 'Tidak'): ?><br><span class="muted"><?= h($answer['verificationMessage'] ?? 'Peringatan') ?></span><br>Pilihan: <span class="badge"><?= h($answer['verificationAnswer'] ?? '') ?></span><?php endif; ?><?php if (($answer['type'] ?? 'yes_no') === 'yes_no' && $answer['choice'] === 'Ya'): ?><?php if (($answer['followup'] ?? '') !== ''): ?><br><?= h($answer['followup']) ?>: <?= h($answer['followupAnswer'] ?? '') ?><?php endif; ?><?php foreach ($answer['followupChoiceAnswers'] ?? [] as $followupChoiceAnswer): ?><br><?= h($followupChoiceAnswer['question']) ?>: <span class="badge"><?= h($followupChoiceAnswer['choice']) ?></span><?php endforeach; ?><?php endif; ?></p><?php endforeach; ?><p class="muted">Supervisor: <?= h($submission['supervisorName']) ?><?= $submission['approvedAt'] !== '' ? ' · Verified ' . h(date('d M Y, H:i', strtotime($submission['approvedAt']))) . ' WIT' : '' ?></p><?php if (($submission['approvalEmailStatus'] ?? '') !== ''): ?><p class="muted">Status email pemberitahuan ke responden: <span class="badge <?= str_starts_with($submission['approvalEmailStatus'], 'Terkirim') ? 'approved' : 'failed' ?>"><?= h($submission['approvalEmailStatus']) ?></span></p><?php endif; ?></div></details></td></tr>
                             <?php endforeach; ?>
                         </tbody></table></div><?php endif; ?>
                     </section>
