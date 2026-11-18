@@ -34,6 +34,297 @@ function h(string $value): string
     return htmlspecialchars($value, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8');
 }
 
+function checklistAnswerLines(array $submission): array
+{
+    $lines = [];
+    foreach (($submission['answers'] ?? []) as $index => $answer) {
+        if (!is_array($answer)) {
+            continue;
+        }
+
+        $question = (string) ($answer['question'] ?? '');
+        $choice = (string) ($answer['choice'] ?? '');
+        $lines[] = ((int) $index + 1) . '. ' . $question . ': ' . $choice;
+
+        if (($answer['type'] ?? '') === 'verification' && $choice === 'Tidak') {
+            $lines[] = '   Peringatan: ' . (string) ($answer['verificationMessage'] ?? '');
+            $lines[] = '   Pilihan verifikasi: ' . (string) ($answer['verificationAnswer'] ?? '');
+        }
+        if (($answer['type'] ?? 'yes_no') === 'yes_no' && $choice === 'Ya') {
+            if ((string) ($answer['followup'] ?? '') !== '') {
+                $lines[] = '   ' . (string) $answer['followup'] . ': ' . (string) ($answer['followupAnswer'] ?? '');
+            }
+            foreach (($answer['followupChoiceAnswers'] ?? []) as $followupAnswer) {
+                if (is_array($followupAnswer)) {
+                    $lines[] = '   ' . (string) ($followupAnswer['question'] ?? '')
+                        . ': ' . (string) ($followupAnswer['choice'] ?? '');
+                }
+            }
+        }
+    }
+
+    return $lines;
+}
+
+function checklistPdfText(string $text): string
+{
+    if (!function_exists('iconv')) {
+        throw new RuntimeException('Ekstensi PHP iconv diperlukan untuk membuat PDF riwayat checklist.');
+    }
+    $converted = iconv('UTF-8', 'Windows-1252//TRANSLIT', $text);
+    if ($converted === false) {
+        throw new RuntimeException('Teks riwayat checklist tidak dapat dikonversi untuk PDF.');
+    }
+    $converted = preg_replace('/[\x00-\x1F\x7F]/', ' ', $converted);
+    if ($converted === null) {
+        throw new RuntimeException('Teks riwayat checklist tidak dapat diproses untuk PDF.');
+    }
+
+    return $converted;
+}
+
+function escapeChecklistPdfLiteral(string $text): string
+{
+    return str_replace(['\\', '(', ')'], ['\\\\', '\\(', '\\)'], $text);
+}
+
+function checklistPdfString(string $text): string
+{
+    return escapeChecklistPdfLiteral(checklistPdfText($text));
+}
+
+function checklistXmlEscape(string $text): string
+{
+    $valid = preg_replace(
+        '/[^\x{9}\x{A}\x{D}\x{20}-\x{D7FF}\x{E000}-\x{FFFD}\x{10000}-\x{10FFFF}]/u',
+        '',
+        $text
+    );
+    if ($valid === null) {
+        throw new RuntimeException('Teks riwayat checklist tidak dapat diproses untuk Excel.');
+    }
+
+    return htmlspecialchars($valid, ENT_QUOTES | ENT_XML1 | ENT_SUBSTITUTE, 'UTF-8');
+}
+
+function createChecklistExcel(array $submissions): string
+{
+    if (!class_exists('ZipArchive')) {
+        throw new RuntimeException('Ekstensi PHP zip diperlukan untuk membuat file Excel.');
+    }
+
+    $columns = [
+        'ID Checklist',
+        'Checklist',
+        'Responden',
+        'Email responden',
+        'Waktu dikirim (WIT)',
+        'Supervisor',
+        'Status approval',
+        'Disetujui oleh',
+        'Waktu disetujui (WIT)',
+        'Jawaban checklist',
+    ];
+    $rows = [$columns];
+    foreach ($submissions as $submission) {
+        $rows[] = [
+            (string) $submission['id'],
+            (string) $submission['formTitle'],
+            (string) $submission['respondent'],
+            (string) $submission['respondentEmail'],
+            date('d-m-Y H:i', strtotime((string) $submission['submittedAt'])) . ' WIT',
+            (string) $submission['supervisorName'],
+            (string) $submission['status'],
+            (string) $submission['approvedBy'],
+            $submission['approvedAt'] !== ''
+                ? date('d-m-Y H:i', strtotime((string) $submission['approvedAt'])) . ' WIT'
+                : '',
+            implode("\n", checklistAnswerLines($submission)),
+        ];
+    }
+    if ($submissions === []) {
+        $rows[] = ['Belum ada riwayat checklist.'];
+    }
+
+    $columnLetters = range('A', 'J');
+    $sheetRows = '';
+    foreach ($rows as $rowIndex => $row) {
+        $rowNumber = $rowIndex + 1;
+        $sheetRows .= '<row r="' . $rowNumber . '">';
+        foreach ($row as $columnIndex => $value) {
+            $cellReference = $columnLetters[$columnIndex] . $rowNumber;
+            $style = $rowIndex === 0 ? '1' : '2';
+            $sheetRows .= '<c r="' . $cellReference . '" s="' . $style . '" t="inlineStr"><is><t xml:space="preserve">'
+                . checklistXmlEscape($value) . '</t></is></c>';
+        }
+        $sheetRows .= '</row>';
+    }
+    $lastRow = count($rows);
+    $worksheet = '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+        . '<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">'
+        . '<dimension ref="A1:J' . $lastRow . '"/>'
+        . '<sheetViews><sheetView workbookViewId="0"><pane ySplit="1" topLeftCell="A2" activePane="bottomLeft" state="frozen"/>'
+        . '</sheetView></sheetViews><sheetFormatPr defaultRowHeight="18"/>'
+        . '<cols><col min="1" max="1" width="22" customWidth="1"/>'
+        . '<col min="2" max="4" width="24" customWidth="1"/>'
+        . '<col min="5" max="9" width="22" customWidth="1"/>'
+        . '<col min="10" max="10" width="60" customWidth="1"/></cols>'
+        . '<sheetData>' . $sheetRows . '</sheetData><autoFilter ref="A1:J' . $lastRow . '"/>'
+        . '</worksheet>';
+    $files = [
+        '[Content_Types].xml' => '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+            . '<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">'
+            . '<Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>'
+            . '<Default Extension="xml" ContentType="application/xml"/>'
+            . '<Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/>'
+            . '<Override PartName="/xl/worksheets/sheet1.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>'
+            . '<Override PartName="/xl/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.styles+xml"/>'
+            . '</Types>',
+        '_rels/.rels' => '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+            . '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">'
+            . '<Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/>'
+            . '</Relationships>',
+        'xl/workbook.xml' => '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+            . '<workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"'
+            . ' xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">'
+            . '<sheets><sheet name="Riwayat Checklist" sheetId="1" r:id="rId1"/></sheets></workbook>',
+        'xl/_rels/workbook.xml.rels' => '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+            . '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">'
+            . '<Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet1.xml"/>'
+            . '<Relationship Id="rId2" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="styles.xml"/>'
+            . '</Relationships>',
+        'xl/styles.xml' => '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+            . '<styleSheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">'
+            . '<fonts count="2"><font><sz val="11"/><name val="Calibri"/></font>'
+            . '<font><b/><color rgb="FFFFFFFF"/><sz val="11"/><name val="Calibri"/></font></fonts>'
+            . '<fills count="3"><fill><patternFill patternType="none"/></fill>'
+            . '<fill><patternFill patternType="gray125"/></fill>'
+            . '<fill><patternFill patternType="solid"><fgColor rgb="FF0F766E"/>'
+            . '<bgColor indexed="64"/></patternFill></fill></fills>'
+            . '<borders count="1"><border><left/><right/><top/><bottom/><diagonal/></border></borders>'
+            . '<cellStyleXfs count="1"><xf numFmtId="0" fontId="0" fillId="0" borderId="0"/></cellStyleXfs>'
+            . '<cellXfs count="3"><xf numFmtId="0" fontId="0" fillId="0" borderId="0" xfId="0"/>'
+            . '<xf numFmtId="0" fontId="1" fillId="2" borderId="0" xfId="0" applyFont="1" applyFill="1"/>'
+            . '<xf numFmtId="0" fontId="0" fillId="0" borderId="0" xfId="0" applyAlignment="1">'
+            . '<alignment vertical="top" wrapText="1"/></xf></cellXfs>'
+            . '<cellStyles count="1"><cellStyle name="Normal" xfId="0" builtinId="0"/></cellStyles></styleSheet>',
+        'xl/worksheets/sheet1.xml' => $worksheet,
+    ];
+
+    $temporaryFile = tempnam(sys_get_temp_dir(), 'ccc-xlsx-');
+    if ($temporaryFile === false) {
+        throw new RuntimeException('File sementara untuk ekspor Excel tidak dapat dibuat.');
+    }
+
+    $archive = null;
+    try {
+        $archive = new ZipArchive();
+        if ($archive->open($temporaryFile, ZipArchive::CREATE | ZipArchive::OVERWRITE) !== true) {
+            throw new RuntimeException('Arsip Excel tidak dapat dibuat.');
+        }
+        foreach ($files as $path => $contents) {
+            if (!$archive->addFromString($path, $contents)) {
+                throw new RuntimeException('Komponen file Excel gagal dibuat: ' . $path);
+            }
+        }
+        if (!$archive->close()) {
+            $archive = null;
+            throw new RuntimeException('Arsip Excel gagal diselesaikan.');
+        }
+        $archive = null;
+        $excel = file_get_contents($temporaryFile);
+        if ($excel === false) {
+            throw new RuntimeException('File Excel hasil ekspor tidak dapat dibaca.');
+        }
+
+        return $excel;
+    } finally {
+        if ($archive instanceof ZipArchive) {
+            $archive->close();
+        }
+        if (is_file($temporaryFile) && !unlink($temporaryFile)) {
+            throw new RuntimeException('File sementara ekspor Excel tidak dapat dibersihkan.');
+        }
+    }
+}
+
+function createChecklistPdf(array $submissions): string
+{
+    $generatedAt = date('d-m-Y H:i') . ' WIT';
+    $lines = [];
+    foreach ($submissions as $submission) {
+        $lines[] = 'Checklist: ' . (string) $submission['formTitle'];
+        $lines[] = 'ID: ' . (string) $submission['id']
+            . ' | Responden: ' . (string) $submission['respondent']
+            . ' | Email: ' . (string) $submission['respondentEmail'];
+        $lines[] = 'Dikirim: ' . date('d-m-Y H:i', strtotime((string) $submission['submittedAt'])) . ' WIT'
+            . ' | Supervisor: ' . (string) $submission['supervisorName'];
+        $lines[] = 'Approval: ' . (string) $submission['status']
+            . ($submission['approvedBy'] !== '' ? ' oleh ' . (string) $submission['approvedBy'] : '')
+            . ($submission['approvedAt'] !== ''
+                ? ' pada ' . date('d-m-Y H:i', strtotime((string) $submission['approvedAt'])) . ' WIT'
+                : '');
+        $answerLines = checklistAnswerLines($submission);
+        array_push($lines, ...($answerLines !== [] ? $answerLines : ['Jawaban checklist tidak tersedia.']));
+        $lines[] = '';
+    }
+    if ($lines === []) {
+        $lines[] = 'Belum ada riwayat checklist.';
+    }
+
+    $wrappedLines = [];
+    foreach ($lines as $line) {
+        $convertedLine = checklistPdfText($line);
+        foreach (explode("\n", wordwrap($convertedLine, 92, "\n", true)) as $wrappedLine) {
+            $wrappedLines[] = escapeChecklistPdfLiteral($wrappedLine);
+        }
+    }
+    $bodyPages = array_chunk($wrappedLines, 51);
+    $objects = [
+        '<< /Type /Catalog /Pages 2 0 R >>',
+        '',
+        '<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /Encoding /WinAnsiEncoding >>',
+    ];
+    $pageReferences = [];
+    foreach ($bodyPages as $pageIndex => $pageLines) {
+        $pageObjectNumber = 4 + ($pageIndex * 2);
+        $contentObjectNumber = $pageObjectNumber + 1;
+        $pageReferences[] = $pageObjectNumber . ' 0 R';
+        $pageText = [
+            checklistPdfString('CRITICAL CONTROL CHECKLIST - RIWAYAT'),
+            checklistPdfString('Diekspor ' . $generatedAt . ' | Halaman ' . ($pageIndex + 1) . ' dari ' . count($bodyPages)),
+            '',
+            ...$pageLines,
+        ];
+        $content = "BT\n/F1 9 Tf\n50 790 Td\n14 TL\n";
+        foreach ($pageText as $line) {
+            $content .= '(' . $line . ") Tj\nT*\n";
+        }
+        $content .= "ET";
+        $objects[] = '<< /Type /Page /Parent 2 0 R /MediaBox [0 0 595 842] '
+            . '/Resources << /Font << /F1 3 0 R >> >> /Contents ' . $contentObjectNumber . ' 0 R >>';
+        $objects[] = '<< /Length ' . strlen($content) . " >>\nstream\n" . $content . "\nendstream";
+    }
+    $objects[1] = '<< /Type /Pages /Kids [' . implode(' ', $pageReferences)
+        . '] /Count ' . count($pageReferences) . ' >>';
+
+    $pdf = "%PDF-1.4\n";
+    $offsets = [0];
+    foreach ($objects as $index => $object) {
+        $offsets[] = strlen($pdf);
+        $pdf .= ($index + 1) . " 0 obj\n" . $object . "\nendobj\n";
+    }
+    $xrefOffset = strlen($pdf);
+    $pdf .= "xref\n0 " . (count($objects) + 1) . "\n0000000000 65535 f \n";
+    foreach (array_slice($offsets, 1) as $offset) {
+        $pdf .= sprintf("%010d 00000 n \n", $offset);
+    }
+    $pdf .= "trailer\n<< /Size " . (count($objects) + 1)
+        . " /Root 1 0 R >>\nstartxref\n" . $xrefOffset . "\n%%EOF";
+
+    return $pdf;
+}
+
 function canApproveSubmission(?array $user, array $submission): bool
 {
     if ($user === null || !($user['isActive'] ?? true)) {
@@ -1103,6 +1394,35 @@ $visibleSubmissions = array_values(array_filter($data['submissions'], static fun
     return $submission['respondent'] === $user['name'];
 }));
 usort($visibleSubmissions, static fn(array $a, array $b): int => strcmp($b['submittedAt'], $a['submittedAt']));
+if (array_key_exists('export', $_GET)) {
+    $exportFormat = $_GET['export'];
+    if (!is_string($exportFormat) || !in_array($exportFormat, ['pdf', 'excel'], true)) {
+        http_response_code(400);
+        exit('Format ekspor tidak valid.');
+    }
+    if (!$user || ($user['role'] ?? '') !== 'Administrator') {
+        http_response_code(403);
+        exit('Ekspor riwayat checklist hanya tersedia untuk Administrator.');
+    }
+
+    $filenameDate = date('Ymd-His');
+    header('Cache-Control: no-store, private');
+    if ($exportFormat === 'pdf') {
+        $pdf = createChecklistPdf($visibleSubmissions);
+        header('Content-Type: application/pdf');
+        header('Content-Disposition: attachment; filename="ccc-riwayat-checklist-' . $filenameDate . '.pdf"');
+        header('Content-Length: ' . strlen($pdf));
+        echo $pdf;
+        exit;
+    }
+
+    $excel = createChecklistExcel($visibleSubmissions);
+    header('Content-Type: application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+    header('Content-Disposition: attachment; filename="ccc-riwayat-checklist-' . $filenameDate . '.xlsx"');
+    header('Content-Length: ' . strlen($excel));
+    echo $excel;
+    exit;
+}
 $historyPageSizes = [10, 50, 75, 100, 150, 200];
 $requestedPageSize = filter_var($_GET['per_page'] ?? 10, FILTER_VALIDATE_INT);
 $historyPageSize = in_array($requestedPageSize, $historyPageSizes, true) ? $requestedPageSize : 10;
@@ -1588,6 +1908,12 @@ $csrf = h($_SESSION['csrf']);
                     <section class="panel"><div class="panel-head" style="align-items:flex-start;flex-wrap:wrap"><div><h2 class="panel-title"><?= $page === 'my-submissions' ? 'Riwayat checklist' : 'Hasil pengisian terbaru' ?></h2><div class="panel-subtitle">Waktu ditampilkan menurut zona waktu WIT (Asia/Jayapura).</div></div>
                         <?php if ($page === 'my-submissions'): ?>
                             <div style="display:flex;align-items:center;justify-content:flex-end;gap:12px;flex-wrap:wrap">
+                                <?php if ($role === 'Administrator'): ?>
+                                    <div style="display:flex;align-items:center;gap:7px;flex-wrap:wrap">
+                                        <a class="btn btn-light btn-small" href="index.php?page=my-submissions&amp;export=excel">Ekspor Excel</a>
+                                        <a class="btn btn-light btn-small" href="index.php?page=my-submissions&amp;export=pdf">Ekspor PDF</a>
+                                    </div>
+                                <?php endif; ?>
                                 <form method="get" style="display:flex;align-items:center;gap:7px;flex-wrap:wrap">
                                     <input type="hidden" name="page" value="my-submissions">
                                     <label for="history-page-size" style="font-size:11px;font-weight:600;color:var(--muted)">Tampilkan</label>
