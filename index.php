@@ -48,7 +48,33 @@ function checklistPostedText(mixed $value): string
     return is_string($value) ? trim($value) : '';
 }
 
-function buildVerifierAnswers(array $answers, array $post): array
+function verifierStartQuestionNumbers(array $questions): array
+{
+    $questionNumbers = [];
+    foreach ($questions as $index => $question) {
+        if (($question['type'] ?? 'yes_no') !== 'supervisor') {
+            $questionNumbers[] = (int) $index + 1;
+        }
+    }
+
+    return $questionNumbers;
+}
+
+function validateVerifierStartQuestion(array $questions, mixed $value): int
+{
+    $startQuestion = filter_var($value, FILTER_VALIDATE_INT);
+    $validStartQuestions = verifierStartQuestionNumbers($questions);
+    if ($validStartQuestions === []) {
+        $validStartQuestions = [1];
+    }
+    if ($startQuestion === false || !in_array($startQuestion, $validStartQuestions, true)) {
+        throw new RuntimeException('Pertanyaan awal verifikator harus berada dalam rentang pertanyaan checklist.');
+    }
+
+    return $startQuestion;
+}
+
+function buildVerifierAnswers(array $answers, array $post, int $startQuestion = 1): array
 {
     $verifierChoices = $post['verifier_choice'] ?? null;
     $verificationAnswers = $post['verifier_verification_answer'] ?? [];
@@ -65,6 +91,10 @@ function buildVerifierAnswers(array $answers, array $post): array
     foreach ($answers as $answerIndex => $respondentAnswer) {
         $type = (string) ($respondentAnswer['type'] ?? 'yes_no');
         if ($type === 'supervisor') {
+            continue;
+        }
+        $questionNumber = (int) $answerIndex + 1;
+        if ($questionNumber < $startQuestion) {
             continue;
         }
         $verifierChoice = checklistPostedText($verifierChoices[$answerIndex] ?? null);
@@ -110,7 +140,8 @@ function buildVerifierAnswers(array $answers, array $post): array
             }
             $verifiedAnswer['verificationAnswer'] = $verificationAnswer;
         }
-        if ($type === 'yes_no' && $verifierChoice === 'Ya') {
+        if ($type === 'yes_no'
+            && (($respondentAnswer['choice'] ?? '') === 'Ya' || $verifierChoice === 'Ya')) {
             $questions = $respondentAnswer['followupChoices'] ?? [];
             if (is_array($questions) && $questions !== []) {
                 $submittedFollowupChoices = $followupChoiceAnswers[$answerIndex] ?? [];
@@ -158,11 +189,13 @@ function renderVerifierForm(array $submission, string $csrf): string
         . '<input type="hidden" name="action" value="approve">'
         . '<input type="hidden" name="submission_id" value="' . h((string) $submission['id']) . '">';
     $questionCount = 0;
+    $startQuestion = max(1, (int) ($submission['verifierStartQuestion'] ?? 1));
     foreach (($submission['answers'] ?? []) as $index => $answer) {
         if (!is_array($answer) || ($answer['type'] ?? 'yes_no') === 'supervisor') {
             continue;
         }
         $questionCount++;
+        $questionNumber = (int) $index + 1;
         $answerIndex = (int) $index;
         $type = (string) ($answer['type'] ?? 'yes_no');
         $options = is_array($answer['options'] ?? null) ? $answer['options'] : [];
@@ -186,6 +219,10 @@ function renderVerifierForm(array $submission, string $csrf): string
                         . ': ' . h((string) ($followupAnswer['choice'] ?? '')) . '</p>';
                 }
             }
+        }
+        if ($questionNumber < $startQuestion) {
+            $html .= '<p class="help">Jawaban ulang tidak diwajibkan sebelum batas mulai pertanyaan verifikator.</p></section>';
+            continue;
         }
         $html .= '<div class="field"><label for="verifier-choice-' . $answerIndex . '">'
             . h($verifierQuestion) . ' <span style="color:#b42318">*</span></label>';
@@ -237,7 +274,9 @@ function renderVerifierForm(array $submission, string $csrf): string
                 }
             }
             if ($followupQuestions !== []) {
-                $html .= '<div class="verifier-conditional" data-index="' . $answerIndex . '" data-show-choice="Ya" hidden>';
+                $html .= '<div class="verifier-conditional" data-index="' . $answerIndex
+                    . '" data-show-choice="Ya" data-show-respondent-choice="' . h((string) ($answer['choice'] ?? ''))
+                    . '" hidden>';
                 foreach ($followupQuestions as $followupIndex => $followupQuestion) {
                     if (!is_array($followupQuestion)) {
                         continue;
@@ -260,7 +299,9 @@ function renderVerifierForm(array $submission, string $csrf): string
                 }
                 $html .= '</div>';
             } elseif ((string) ($answer['followup'] ?? '') !== '') {
-                $html .= '<div class="field verifier-conditional" data-index="' . $answerIndex . '" data-show-choice="Ya" hidden>'
+                $html .= '<div class="field verifier-conditional" data-index="' . $answerIndex
+                    . '" data-show-choice="Ya" data-show-respondent-choice="' . h((string) ($answer['choice'] ?? ''))
+                    . '" hidden>'
                     . '<label>' . h((string) $answer['followup']) . ' <span style="color:#b42318">*</span></label>'
                     . '<textarea name="verifier_followup_answer[' . $answerIndex . ']" maxlength="500" disabled required></textarea></div>';
             }
@@ -1181,6 +1222,10 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 throw new RuntimeException('Judul maksimal 120 karakter dan deskripsi maksimal 240 karakter.');
             }
             $questions = buildQuestionsFromPost($uploadDir);
+            $verifierStartQuestion = validateVerifierStartQuestion(
+                $questions,
+                $_POST['verifier_start_question'] ?? 1
+            );
             $logo = storeImage(getSingleUploadedFile('company_logo'), $uploadDir);
             $data['forms'][] = [
                 'id' => bin2hex(random_bytes(6)),
@@ -1188,6 +1233,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 'description' => $description,
                 'logo' => $logo,
                 'questions' => $questions,
+                'verifierStartQuestion' => $verifierStartQuestion,
                 'createdAt' => date(DATE_ATOM),
             ];
             saveData($dataFile, $data);
@@ -1219,9 +1265,14 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             $data['forms'][$formIndex]['logo'] = $newLogo !== ''
                 ? $newLogo
                 : ($removeLogo ? '' : ($data['forms'][$formIndex]['logo'] ?? ''));
-            $data['forms'][$formIndex]['questions'] = buildQuestionsFromPost(
+            $questions = buildQuestionsFromPost(
                 $uploadDir,
                 $data['forms'][$formIndex]['questions']
+            );
+            $data['forms'][$formIndex]['questions'] = $questions;
+            $data['forms'][$formIndex]['verifierStartQuestion'] = validateVerifierStartQuestion(
+                $questions,
+                $_POST['verifier_start_question'] ?? 1
             );
             saveData($dataFile, $data);
             setFlash('success', 'Perubahan form berhasil disimpan. Riwayat checklist sebelumnya tetap tersimpan.');
@@ -1486,6 +1537,10 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 'id' => bin2hex(random_bytes(8)),
                 'formId' => $form['id'],
                 'formTitle' => $form['title'],
+                'verifierStartQuestion' => validateVerifierStartQuestion(
+                    $form['questions'],
+                    $form['verifierStartQuestion'] ?? 1
+                ),
                 'respondent' => $respondentName,
                 'respondentEmail' => $email,
                 'supervisor' => $supervisorUsername,
@@ -1569,7 +1624,11 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 if ($submission['status'] !== 'Menunggu approval') {
                     throw new RuntimeException('Checklist ini sudah diproses sebelumnya.');
                 }
-                $submission['verifierAnswers'] = buildVerifierAnswers($submission['answers'], $_POST);
+                $submission['verifierAnswers'] = buildVerifierAnswers(
+                    $submission['answers'],
+                    $_POST,
+                    (int) ($submission['verifierStartQuestion'] ?? 1)
+                );
                 $submission['status'] = 'Disetujui';
                 $submission['approvedBy'] = $currentUser['name'];
                 $submission['approvedAt'] = date(DATE_ATOM);
@@ -2040,9 +2099,20 @@ $csrf = h($_SESSION['csrf']);
                 <?php elseif ($page === 'edit-form' && $role === 'Administrator' && $editingForm): ?>
                     <div class="page-heading"><div><div class="eyebrow">Questionnaire management</div><h1>Edit form checklist</h1><p>Perbarui judul, deskripsi, pertanyaan, opsi, dan gambar pendukung.</p></div><a class="btn btn-light" href="index.php?page=forms">← Kembali ke form</a></div>
                     <div class="panel"><div class="panel-head"><div><h2 class="panel-title">Edit <?= h($editingForm['title']) ?></h2><div class="panel-subtitle">Riwayat checklist yang sudah dikirim tidak berubah saat form diedit.</div></div></div>
+                        <?php
+                            $editingVerifierStartQuestions = verifierStartQuestionNumbers($editingForm['questions']);
+                            if ($editingVerifierStartQuestions === []) {
+                                $editingVerifierStartQuestions = [1];
+                            }
+                            $editingVerifierStartQuestion = (int) ($editingForm['verifierStartQuestion'] ?? 1);
+                            if (!in_array($editingVerifierStartQuestion, $editingVerifierStartQuestions, true)) {
+                                $editingVerifierStartQuestion = $editingVerifierStartQuestions[0];
+                            }
+                        ?>
                         <form method="post" enctype="multipart/form-data">
                             <input type="hidden" name="csrf" value="<?= $csrf ?>"><input type="hidden" name="action" value="update_form"><input type="hidden" name="form_id" value="<?= h($editingForm['id']) ?>">
                             <div class="form-grid"><div class="field"><label>Judul form</label><input name="title" maxlength="120" required value="<?= h($editingForm['title']) ?>"></div><div class="field"><label>Deskripsi</label><input name="description" maxlength="240" value="<?= h($editingForm['description']) ?>"></div></div>
+                            <div class="field"><label for="verifier-start-question">Mulai wajib jawab ulang dari pertanyaan</label><select id="verifier-start-question" name="verifier_start_question" data-initial-value="<?= $editingVerifierStartQuestion ?>" required><?php foreach ($editingVerifierStartQuestions as $startQuestion): ?><option value="<?= $startQuestion ?>" <?= $startQuestion === $editingVerifierStartQuestion ? 'selected' : '' ?>>Pertanyaan ke-<?= $startQuestion ?></option><?php endforeach; ?></select><span class="help">Jawaban ulang wajib diisi mulai nomor yang dipilih hingga akhir. Pertanyaan lanjutan tetap mengikuti jawaban responden dan jawaban verifikator.</span></div>
                             <div class="field"><label for="company-logo">Logo perusahaan (opsional)</label><input id="company-logo" type="file" name="company_logo" accept="image/jpeg,image/png,image/webp"><span class="help">Format JPG, PNG, atau WEBP · Maksimal 4 MB. Logo tampil di bagian atas form responden.</span>
                                 <?php if (($editingForm['logo'] ?? '') !== ''): ?><img class="company-logo logo-editor-preview" src="<?= h(mediaUrl($editingForm['logo'])) ?>" alt="Logo perusahaan saat ini"><label class="logo-remove"><input type="checkbox" name="remove_company_logo" value="1"> Hapus logo saat ini</label><?php endif; ?>
                             </div>
@@ -2070,6 +2140,7 @@ $csrf = h($_SESSION['csrf']);
                         <form method="post" enctype="multipart/form-data">
                             <input type="hidden" name="csrf" value="<?= $csrf ?>"><input type="hidden" name="action" value="create_form">
                             <div class="form-grid"><div class="field"><label>Judul form</label><input name="title" maxlength="120" required placeholder="Contoh: Inspeksi keselamatan harian"></div><div class="field"><label>Deskripsi</label><input name="description" maxlength="240" placeholder="Petunjuk singkat untuk responden"></div></div>
+                            <div class="field"><label for="verifier-start-question">Mulai wajib jawab ulang dari pertanyaan</label><select id="verifier-start-question" name="verifier_start_question" data-initial-value="1" required><option value="1">Pertanyaan ke-1</option></select><span class="help">Jawaban ulang wajib diisi mulai nomor yang dipilih hingga akhir. Pertanyaan lanjutan tetap mengikuti jawaban responden dan jawaban verifikator.</span></div>
                             <div class="field"><label for="company-logo">Logo perusahaan (opsional)</label><input id="company-logo" type="file" name="company_logo" accept="image/jpeg,image/png,image/webp"><span class="help">Format JPG, PNG, atau WEBP · Maksimal 4 MB. Logo akan tampil di bagian atas form responden.</span></div>
                             <div id="question-list"></div>
                             <div style="display:flex;gap:9px;flex-wrap:wrap"><button class="btn btn-light" type="button" id="add-question">＋ Pertanyaan Ya/Tidak</button><button class="btn btn-light" type="button" id="add-verification-question">＋ Verifikasi Ya/Tidak</button><button class="btn btn-light" type="button" id="add-select-question">＋ Pertanyaan pilihan</button><button class="btn btn-light" type="button" id="add-text-question">＋ Isian teks</button><button class="btn btn-light" type="button" id="add-supervisor-question">＋ Pilihan email supervisor</button></div>
@@ -2260,7 +2331,8 @@ $csrf = h($_SESSION['csrf']);
                         ? selectedRadio.value
                         : (firstControl && firstControl.type !== 'radio' ? firstControl.value : '');
                     form.querySelectorAll(`.verifier-conditional[data-index="${index}"]`).forEach((container) => {
-                        const isVisible = container.dataset.showChoice === choice;
+                        const isVisible = container.dataset.showChoice === choice
+                            || container.dataset.showRespondentChoice === container.dataset.showChoice;
                         container.hidden = !isVisible;
                         container.querySelectorAll('input, select, textarea').forEach((input) => {
                             input.disabled = !isVisible;
@@ -2286,6 +2358,33 @@ $csrf = h($_SESSION['csrf']);
             const addSupervisorButton = document.getElementById('add-supervisor-question');
             const addVerificationButton = document.getElementById('add-verification-question');
             if (list && addYesNoButton && addSelectButton && addTextButton && addSupervisorButton && addVerificationButton) {
+                const verifierStartSelect = document.getElementById('verifier-start-question');
+                const updateVerifierStartOptions = () => {
+                    if (!verifierStartSelect) {
+                        return;
+                    }
+                    const startQuestions = [...list.querySelectorAll('input[name="question_type[]"]')]
+                        .map((input, index) => input.value === 'supervisor' ? null : index + 1)
+                        .filter((questionNumber) => questionNumber !== null);
+                    if (startQuestions.length === 0) {
+                        startQuestions.push(1);
+                    }
+                    const requestedQuestion = Math.max(
+                        1,
+                        Number(verifierStartSelect.value || verifierStartSelect.dataset.initialValue) || 1
+                    );
+                    const selectedQuestion = startQuestions.includes(requestedQuestion)
+                        ? requestedQuestion
+                        : (startQuestions.find((questionNumber) => questionNumber > requestedQuestion) || startQuestions[0]);
+                    verifierStartSelect.replaceChildren();
+                    startQuestions.forEach((questionNumber) => {
+                        const option = document.createElement('option');
+                        option.value = String(questionNumber);
+                        option.textContent = `Pertanyaan ke-${questionNumber}`;
+                        verifierStartSelect.appendChild(option);
+                    });
+                    verifierStartSelect.value = String(selectedQuestion);
+                };
                 const addQuestion = (type, initialQuestion = null, originalIndex = -1) => {
                     if (type === 'supervisor' && list.querySelector('input[name="question_type[]"][value="supervisor"]')) {
                         if (initialQuestion === null) {
@@ -2328,6 +2427,7 @@ $csrf = h($_SESSION['csrf']);
                                 field.name = `${fieldName}[${position}][]`;
                             });
                         });
+                        updateVerifierStartOptions();
                     });
                     list.appendChild(block);
                     const followupChoiceList = block.querySelector('.followup-choice-list');
@@ -2443,11 +2543,26 @@ $csrf = h($_SESSION['csrf']);
                         });
                     }
                 };
-                addYesNoButton.addEventListener('click', () => addQuestion('yes_no'));
-                addVerificationButton.addEventListener('click', () => addQuestion('verification'));
-                addSelectButton.addEventListener('click', () => addQuestion('select'));
-                addTextButton.addEventListener('click', () => addQuestion('text'));
-                addSupervisorButton.addEventListener('click', () => addQuestion('supervisor'));
+                addYesNoButton.addEventListener('click', () => {
+                    addQuestion('yes_no');
+                    updateVerifierStartOptions();
+                });
+                addVerificationButton.addEventListener('click', () => {
+                    addQuestion('verification');
+                    updateVerifierStartOptions();
+                });
+                addSelectButton.addEventListener('click', () => {
+                    addQuestion('select');
+                    updateVerifierStartOptions();
+                });
+                addTextButton.addEventListener('click', () => {
+                    addQuestion('text');
+                    updateVerifierStartOptions();
+                });
+                addSupervisorButton.addEventListener('click', () => {
+                    addQuestion('supervisor');
+                    updateVerifierStartOptions();
+                });
                 if (editingQuestions.length > 0) {
                     editingQuestions.forEach((question, originalIndex) => {
                         addQuestion(question.type || 'yes_no', question, originalIndex);
@@ -2455,6 +2570,7 @@ $csrf = h($_SESSION['csrf']);
                 } else {
                     addQuestion('yes_no');
                 }
+                updateVerifierStartOptions();
             }
             document.querySelectorAll('[data-question]').forEach((card) => {
                 if (card.dataset.type === 'verification') {
