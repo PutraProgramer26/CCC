@@ -79,6 +79,7 @@ function ensureCccSchema(PDO $connection): void
             description VARCHAR(240) NOT NULL DEFAULT '',
             company_logo VARCHAR(40) NOT NULL DEFAULT '',
             questions_json LONGTEXT NOT NULL,
+            verifier_start_question INT UNSIGNED NOT NULL DEFAULT 1,
             created_at VARCHAR(35) NOT NULL,
             INDEX idx_ccc_forms_created_at (created_at)
         ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci"
@@ -87,11 +88,16 @@ function ensureCccSchema(PDO $connection): void
     if (!$formLogoColumn) {
         $connection->exec("ALTER TABLE ccc_forms ADD COLUMN company_logo VARCHAR(40) NOT NULL DEFAULT '' AFTER description");
     }
+    $formVerifierStartColumn = $connection->query("SHOW COLUMNS FROM ccc_forms LIKE 'verifier_start_question'")->fetch();
+    if (!$formVerifierStartColumn) {
+        $connection->exec("ALTER TABLE ccc_forms ADD COLUMN verifier_start_question INT UNSIGNED NOT NULL DEFAULT 1 AFTER questions_json");
+    }
     $connection->exec(
         "CREATE TABLE IF NOT EXISTS ccc_submissions (
             id CHAR(16) NOT NULL PRIMARY KEY,
             form_id CHAR(12) NOT NULL,
             form_title VARCHAR(120) NOT NULL,
+            verifier_start_question INT UNSIGNED NULL DEFAULT NULL,
             respondent VARCHAR(100) NOT NULL,
             respondent_email VARCHAR(254) NOT NULL,
             supervisor_username VARCHAR(30) NOT NULL,
@@ -110,6 +116,10 @@ function ensureCccSchema(PDO $connection): void
             INDEX idx_ccc_submissions_submitted_at (submitted_at)
         ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci"
     );
+    $submissionVerifierStartColumn = $connection->query("SHOW COLUMNS FROM ccc_submissions LIKE 'verifier_start_question'")->fetch();
+    if (!$submissionVerifierStartColumn) {
+        $connection->exec("ALTER TABLE ccc_submissions ADD COLUMN verifier_start_question INT UNSIGNED NULL DEFAULT NULL AFTER form_title");
+    }
     $approvalEmailStatusColumn = $connection->query("SHOW COLUMNS FROM ccc_submissions LIKE 'approval_email_status'")->fetch();
     if (!$approvalEmailStatusColumn) {
         $connection->exec("ALTER TABLE ccc_submissions ADD COLUMN approval_email_status VARCHAR(160) NOT NULL DEFAULT '' AFTER email_status");
@@ -141,7 +151,7 @@ function fetchCccData(PDO $connection): array
         ];
     }
 
-    foreach ($connection->query('SELECT id, title, description, company_logo, questions_json, created_at FROM ccc_forms ORDER BY created_at, id') as $row) {
+    foreach ($connection->query('SELECT id, title, description, company_logo, questions_json, verifier_start_question, created_at FROM ccc_forms ORDER BY created_at, id') as $row) {
         $questions = json_decode($row['questions_json'], true);
         if (!is_array($questions)) {
             throw new RuntimeException('Struktur pertanyaan di database CCC tidak valid.');
@@ -152,12 +162,17 @@ function fetchCccData(PDO $connection): array
             'description' => $row['description'],
             'logo' => $row['company_logo'],
             'questions' => $questions,
+            'verifierStartQuestion' => (int) $row['verifier_start_question'],
             'createdAt' => $row['created_at'],
         ];
     }
+    $formVerifierStartQuestions = [];
+    foreach ($data['forms'] as $form) {
+        $formVerifierStartQuestions[$form['id']] = $form['verifierStartQuestion'];
+    }
 
     foreach ($connection->query(
-        'SELECT id, form_id, form_title, respondent, respondent_email, supervisor_username, supervisor_name, supervisor_email, answers_json, verifier_answers_json, submitted_at, approval_status, approved_by, approved_at, email_status, approval_email_status FROM ccc_submissions ORDER BY submitted_at, id'
+        'SELECT id, form_id, form_title, verifier_start_question, respondent, respondent_email, supervisor_username, supervisor_name, supervisor_email, answers_json, verifier_answers_json, submitted_at, approval_status, approved_by, approved_at, email_status, approval_email_status FROM ccc_submissions ORDER BY submitted_at, id'
     ) as $row) {
         $answers = json_decode($row['answers_json'], true);
         if (!is_array($answers)) {
@@ -173,6 +188,9 @@ function fetchCccData(PDO $connection): array
             'id' => $row['id'],
             'formId' => $row['form_id'],
             'formTitle' => $row['form_title'],
+            'verifierStartQuestion' => $row['verifier_start_question'] === null
+                ? ($formVerifierStartQuestions[$row['form_id']] ?? 1)
+                : (int) $row['verifier_start_question'],
             'respondent' => $row['respondent'],
             'respondentEmail' => $row['respondent_email'],
             'supervisor' => $row['supervisor_username'],
@@ -202,15 +220,15 @@ function persistCccData(PDO $connection, array $data, array $previousData): void
     );
     $deleteUserStatement = $connection->prepare('DELETE FROM ccc_users WHERE username = :username');
     $formStatement = $connection->prepare(
-        'INSERT INTO ccc_forms (id, title, description, company_logo, questions_json, created_at)
-         VALUES (:id, :title, :description, :company_logo, :questions_json, :created_at)
-         ON DUPLICATE KEY UPDATE title = VALUES(title), description = VALUES(description), company_logo = VALUES(company_logo), questions_json = VALUES(questions_json), created_at = VALUES(created_at)'
+        'INSERT INTO ccc_forms (id, title, description, company_logo, questions_json, verifier_start_question, created_at)
+         VALUES (:id, :title, :description, :company_logo, :questions_json, :verifier_start_question, :created_at)
+         ON DUPLICATE KEY UPDATE title = VALUES(title), description = VALUES(description), company_logo = VALUES(company_logo), questions_json = VALUES(questions_json), verifier_start_question = VALUES(verifier_start_question), created_at = VALUES(created_at)'
     );
     $deleteFormStatement = $connection->prepare('DELETE FROM ccc_forms WHERE id = :id');
     $submissionStatement = $connection->prepare(
-        'INSERT INTO ccc_submissions (id, form_id, form_title, respondent, respondent_email, supervisor_username, supervisor_name, supervisor_email, answers_json, verifier_answers_json, submitted_at, approval_status, approved_by, approved_at, email_status, approval_email_status)
-         VALUES (:id, :form_id, :form_title, :respondent, :respondent_email, :supervisor_username, :supervisor_name, :supervisor_email, :answers_json, :verifier_answers_json, :submitted_at, :approval_status, :approved_by, :approved_at, :email_status, :approval_email_status)
-         ON DUPLICATE KEY UPDATE form_id = VALUES(form_id), form_title = VALUES(form_title), respondent = VALUES(respondent), respondent_email = VALUES(respondent_email), supervisor_username = VALUES(supervisor_username), supervisor_name = VALUES(supervisor_name), supervisor_email = VALUES(supervisor_email), answers_json = VALUES(answers_json), verifier_answers_json = VALUES(verifier_answers_json), submitted_at = VALUES(submitted_at), approval_status = VALUES(approval_status), approved_by = VALUES(approved_by), approved_at = VALUES(approved_at), email_status = VALUES(email_status), approval_email_status = VALUES(approval_email_status)'
+        'INSERT INTO ccc_submissions (id, form_id, form_title, verifier_start_question, respondent, respondent_email, supervisor_username, supervisor_name, supervisor_email, answers_json, verifier_answers_json, submitted_at, approval_status, approved_by, approved_at, email_status, approval_email_status)
+         VALUES (:id, :form_id, :form_title, :verifier_start_question, :respondent, :respondent_email, :supervisor_username, :supervisor_name, :supervisor_email, :answers_json, :verifier_answers_json, :submitted_at, :approval_status, :approved_by, :approved_at, :email_status, :approval_email_status)
+         ON DUPLICATE KEY UPDATE form_id = VALUES(form_id), form_title = VALUES(form_title), verifier_start_question = VALUES(verifier_start_question), respondent = VALUES(respondent), respondent_email = VALUES(respondent_email), supervisor_username = VALUES(supervisor_username), supervisor_name = VALUES(supervisor_name), supervisor_email = VALUES(supervisor_email), answers_json = VALUES(answers_json), verifier_answers_json = VALUES(verifier_answers_json), submitted_at = VALUES(submitted_at), approval_status = VALUES(approval_status), approved_by = VALUES(approved_by), approved_at = VALUES(approved_at), email_status = VALUES(email_status), approval_email_status = VALUES(approval_email_status)'
     );
 
     $connection->beginTransaction();
@@ -254,6 +272,7 @@ function persistCccData(PDO $connection, array $data, array $previousData): void
                 'description' => $form['description'],
                 'company_logo' => $form['logo'] ?? '',
                 'questions_json' => json_encode($form['questions'], $jsonFlags),
+                'verifier_start_question' => $form['verifierStartQuestion'] ?? 1,
                 'created_at' => $form['createdAt'],
             ]);
         }
@@ -270,6 +289,7 @@ function persistCccData(PDO $connection, array $data, array $previousData): void
                 'id' => $submission['id'],
                 'form_id' => $submission['formId'],
                 'form_title' => $submission['formTitle'],
+                'verifier_start_question' => $submission['verifierStartQuestion'] ?? 1,
                 'respondent' => $submission['respondent'],
                 'respondent_email' => $submission['respondentEmail'],
                 'supervisor_username' => $submission['supervisor'],
