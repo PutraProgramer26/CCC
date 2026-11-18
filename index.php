@@ -2423,7 +2423,7 @@ $csrf = h($_SESSION['csrf']);
                             item.querySelectorAll('[data-followup-kind]').forEach((field) => {
                                 const fieldName = field.dataset.followupKind === 'verifier_choice_text'
                                     ? 'verifier_followup_choice_text'
-                                    : `followup_choice_${field.dataset.followupKind}`;
+                                    : `followup_${field.dataset.followupKind}`;
                                 field.name = `${fieldName}[${position}][]`;
                             });
                         });
