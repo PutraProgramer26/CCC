@@ -104,6 +104,7 @@ function ensureCccSchema(PDO $connection): void
             approved_at VARCHAR(35) NOT NULL DEFAULT '',
             email_status VARCHAR(160) NOT NULL DEFAULT '',
             approval_email_status VARCHAR(160) NOT NULL DEFAULT '',
+            verifier_answers_json LONGTEXT NULL,
             INDEX idx_ccc_submissions_form_id (form_id),
             INDEX idx_ccc_submissions_supervisor_status (supervisor_username, approval_status),
             INDEX idx_ccc_submissions_submitted_at (submitted_at)
@@ -112,6 +113,10 @@ function ensureCccSchema(PDO $connection): void
     $approvalEmailStatusColumn = $connection->query("SHOW COLUMNS FROM ccc_submissions LIKE 'approval_email_status'")->fetch();
     if (!$approvalEmailStatusColumn) {
         $connection->exec("ALTER TABLE ccc_submissions ADD COLUMN approval_email_status VARCHAR(160) NOT NULL DEFAULT '' AFTER email_status");
+    }
+    $verifierAnswersColumn = $connection->query("SHOW COLUMNS FROM ccc_submissions LIKE 'verifier_answers_json'")->fetch();
+    if (!$verifierAnswersColumn) {
+        $connection->exec("ALTER TABLE ccc_submissions ADD COLUMN verifier_answers_json LONGTEXT NULL AFTER answers_json");
     }
     $connection->exec(
         "CREATE TABLE IF NOT EXISTS ccc_app_meta (
@@ -152,11 +157,17 @@ function fetchCccData(PDO $connection): array
     }
 
     foreach ($connection->query(
-        'SELECT id, form_id, form_title, respondent, respondent_email, supervisor_username, supervisor_name, supervisor_email, answers_json, submitted_at, approval_status, approved_by, approved_at, email_status, approval_email_status FROM ccc_submissions ORDER BY submitted_at, id'
+        'SELECT id, form_id, form_title, respondent, respondent_email, supervisor_username, supervisor_name, supervisor_email, answers_json, verifier_answers_json, submitted_at, approval_status, approved_by, approved_at, email_status, approval_email_status FROM ccc_submissions ORDER BY submitted_at, id'
     ) as $row) {
         $answers = json_decode($row['answers_json'], true);
         if (!is_array($answers)) {
             throw new RuntimeException('Struktur jawaban checklist di database CCC tidak valid.');
+        }
+        $verifierAnswers = $row['verifier_answers_json'] !== null
+            ? json_decode($row['verifier_answers_json'], true)
+            : [];
+        if (!is_array($verifierAnswers)) {
+            throw new RuntimeException('Struktur jawaban verifikator di database CCC tidak valid.');
         }
         $data['submissions'][] = [
             'id' => $row['id'],
@@ -168,6 +179,7 @@ function fetchCccData(PDO $connection): array
             'supervisorName' => $row['supervisor_name'],
             'supervisorEmail' => $row['supervisor_email'],
             'answers' => $answers,
+            'verifierAnswers' => $verifierAnswers,
             'submittedAt' => $row['submitted_at'],
             'status' => $row['approval_status'],
             'approvedBy' => $row['approved_by'],
@@ -196,9 +208,9 @@ function persistCccData(PDO $connection, array $data, array $previousData): void
     );
     $deleteFormStatement = $connection->prepare('DELETE FROM ccc_forms WHERE id = :id');
     $submissionStatement = $connection->prepare(
-        'INSERT INTO ccc_submissions (id, form_id, form_title, respondent, respondent_email, supervisor_username, supervisor_name, supervisor_email, answers_json, submitted_at, approval_status, approved_by, approved_at, email_status, approval_email_status)
-         VALUES (:id, :form_id, :form_title, :respondent, :respondent_email, :supervisor_username, :supervisor_name, :supervisor_email, :answers_json, :submitted_at, :approval_status, :approved_by, :approved_at, :email_status, :approval_email_status)
-         ON DUPLICATE KEY UPDATE form_id = VALUES(form_id), form_title = VALUES(form_title), respondent = VALUES(respondent), respondent_email = VALUES(respondent_email), supervisor_username = VALUES(supervisor_username), supervisor_name = VALUES(supervisor_name), supervisor_email = VALUES(supervisor_email), answers_json = VALUES(answers_json), submitted_at = VALUES(submitted_at), approval_status = VALUES(approval_status), approved_by = VALUES(approved_by), approved_at = VALUES(approved_at), email_status = VALUES(email_status), approval_email_status = VALUES(approval_email_status)'
+        'INSERT INTO ccc_submissions (id, form_id, form_title, respondent, respondent_email, supervisor_username, supervisor_name, supervisor_email, answers_json, verifier_answers_json, submitted_at, approval_status, approved_by, approved_at, email_status, approval_email_status)
+         VALUES (:id, :form_id, :form_title, :respondent, :respondent_email, :supervisor_username, :supervisor_name, :supervisor_email, :answers_json, :verifier_answers_json, :submitted_at, :approval_status, :approved_by, :approved_at, :email_status, :approval_email_status)
+         ON DUPLICATE KEY UPDATE form_id = VALUES(form_id), form_title = VALUES(form_title), respondent = VALUES(respondent), respondent_email = VALUES(respondent_email), supervisor_username = VALUES(supervisor_username), supervisor_name = VALUES(supervisor_name), supervisor_email = VALUES(supervisor_email), answers_json = VALUES(answers_json), verifier_answers_json = VALUES(verifier_answers_json), submitted_at = VALUES(submitted_at), approval_status = VALUES(approval_status), approved_by = VALUES(approved_by), approved_at = VALUES(approved_at), email_status = VALUES(email_status), approval_email_status = VALUES(approval_email_status)'
     );
 
     $connection->beginTransaction();
@@ -264,6 +276,7 @@ function persistCccData(PDO $connection, array $data, array $previousData): void
                 'supervisor_name' => $submission['supervisorName'],
                 'supervisor_email' => $submission['supervisorEmail'],
                 'answers_json' => json_encode($submission['answers'], $jsonFlags),
+                'verifier_answers_json' => json_encode($submission['verifierAnswers'] ?? [], $jsonFlags),
                 'submitted_at' => $submission['submittedAt'],
                 'approval_status' => $submission['status'],
                 'approved_by' => $submission['approvedBy'],

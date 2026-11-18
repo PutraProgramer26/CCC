@@ -210,9 +210,10 @@ function sendCccApprovalEmail(array $submission): void
             'submission_id' => $submissionId,
         ], '', '&', PHP_QUERY_RFC3986);
     $appLink = '<p style="margin:24px 0"><a href="' . $escape($approvalUrl) . '" style="display:inline-block;padding:11px 20px;background:#0f766e;color:#fff;text-decoration:none;border-radius:8px;font-weight:700">Verify</a></p>'
-        . '<p style="margin:0 0 20px;color:#6b7787;font-size:12px">Anda harus login. Setelah login, checklist ini akan langsung terbuka untuk ditinjau. Verifikasi tetap dilakukan di dalam sistem.</p>';
+        . '<p style="margin:0 0 20px;color:#6b7787;font-size:12px">Anda harus login. Setelah login, checklist ini akan langsung terbuka untuk ditinjau. Verifikator wajib menjawab kembali pertanyaan checklist sebelum menekan Verify.</p>';
     $text .= "Buka checklist untuk ditinjau dan diverifikasi:\n{$approvalUrl}\n"
-        . "Login diperlukan. Setelah login, checklist ini akan langsung terbuka untuk ditinjau.\n";
+        . "Login diperlukan. Setelah login, checklist ini akan langsung terbuka untuk ditinjau.\n"
+        . "Verifikator wajib menjawab kembali pertanyaan checklist sebelum menekan Verify.\n";
 
     $html = '<!doctype html><html lang="id"><body style="margin:0;padding:24px;background:#f4f6fa;font:14px/1.6 Arial,sans-serif;color:#17212f">'
         . '<div style="max-width:680px;margin:0 auto;padding:24px;background:#fff;border:1px solid #e6eaf0;border-radius:12px">'
