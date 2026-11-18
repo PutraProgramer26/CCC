@@ -4,7 +4,8 @@ declare(strict_types=1);
 /**
  * Create a PDO connection to the CCC MySQL database.
  *
- * XAMPP defaults: host 127.0.0.1, port 3306, user root, empty password.
+ * The application defaults to its hosting database. For local XAMPP, use
+ * host 127.0.0.1, port 3306, user root, and an empty password.
  * Override these values with DB_HOST, DB_PORT, DB_NAME, DB_USER, and DB_PASSWORD.
  */
 function getDatabaseConnection(): PDO
@@ -38,13 +39,22 @@ function getDatabaseConnection(): PDO
             PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION,
             PDO::ATTR_DEFAULT_FETCH_MODE => PDO::FETCH_ASSOC,
             PDO::ATTR_EMULATE_PREPARES => false,
+            PDO::ATTR_PERSISTENT => true,
             PDO::ATTR_TIMEOUT => 5,
         ]);
     } catch (PDOException $exception) {
         error_log('CCC database connection failed: ' . $exception->getMessage());
+        if ((int) ($exception->errorInfo[1] ?? 0) === 1226) {
+            throw new RuntimeException(
+                'Kuota koneksi per jam akun database CCC telah tercapai. Tunggu hingga kuota hosting direset atau hubungi dukungan hosting untuk menaikkan max_connections_per_hour. Hindari memuat ulang halaman berulang kali.',
+                0,
+                $exception
+            );
+        }
+
         throw new RuntimeException(
             'Koneksi database CCC gagal: ' . $exception->getMessage()
-            . ' Pastikan MySQL XAMPP sudah berstatus Running / "ready for connections", database CCC tersedia, dan konfigurasi DB_HOST/DB_PORT/DB_USER/DB_PASSWORD sesuai.',
+            . ' Pastikan server MySQL pada host aktif, database CCC tersedia, dan konfigurasi DB_HOST/DB_PORT/DB_USER/DB_PASSWORD sesuai.',
             0,
             $exception
         );
