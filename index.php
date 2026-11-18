@@ -184,7 +184,7 @@ function buildVerifierAnswers(array $answers, array $post, int $startQuestion = 
 
 function renderVerifierForm(array $submission, string $csrf): string
 {
-    $html = '<form class="verifier-form" method="post" style="border-top:1px solid var(--line);margin-top:14px;padding-top:14px">'
+    $html = '<form class="verifier-form verifier-modal-form" method="post">'
         . '<input type="hidden" name="csrf" value="' . h($csrf) . '">'
         . '<input type="hidden" name="action" value="approve">'
         . '<input type="hidden" name="submission_id" value="' . h((string) $submission['id']) . '">';
@@ -311,10 +311,10 @@ function renderVerifierForm(array $submission, string $csrf): string
 
     if ($questionCount === 0) {
         return $html . '<p class="muted">Tidak ada pertanyaan checklist responden yang perlu diulang.</p>'
-            . '<button class="btn btn-primary" type="submit">✓ Verify checklist</button></form>';
+            . '<button class="btn btn-primary" type="submit">✓ Simpan verifikasi</button></form>';
     }
 
-    return $html . '<button class="btn btn-primary" type="submit">✓ Verify checklist</button></form>';
+    return $html . '<button class="btn btn-primary" type="submit">✓ Simpan verifikasi</button></form>';
 }
 
 function checklistVerifierAnswerLines(array $submission): array
@@ -1848,6 +1848,19 @@ $csrf = h($_SESSION['csrf']);
         .preview-dialog{width:min(760px,calc(100% - 24px));max-height:90vh;overflow:auto;border:1px solid var(--line);border-radius:16px;padding:22px;background:var(--canvas);color:var(--ink);box-shadow:var(--shadow)}.preview-dialog::backdrop{background:rgba(17,24,39,.58);backdrop-filter:blur(3px)}.preview-dialog-head{display:flex;justify-content:space-between;align-items:flex-start;gap:15px;margin-bottom:8px}.preview-dialog-head h2{margin:4px 0 0;font-size:21px}.preview-response{margin-top:18px;padding:17px;background:#fff;border:1px solid var(--line);border-radius:12px}.preview-response .question-card{margin:12px 0}.preview-actions{display:flex;gap:9px;flex-wrap:wrap;margin-top:16px}.preview-dialog .question-image{margin-left:41px}.preview-response .question-image{max-height:160px}.company-logo{display:block;width:auto;max-width:min(100%,240px);max-height:100px;object-fit:contain;object-position:left center;margin:0 0 16px}.logo-editor-preview{margin:8px 0;max-height:80px}.logo-remove{display:flex;align-items:center;gap:7px;font-size:11px;color:var(--muted)}.logo-remove input{width:auto}.preview-company-logo{max-width:180px;max-height:70px;margin:12px 0}@media(max-width:600px){.preview-dialog{padding:16px}.preview-dialog .question-image{margin-left:0}}
         .sidebar{transition:transform .2s ease}.shell.sidebar-hidden .sidebar{transform:translateX(-100%)}.shell.sidebar-hidden .main{margin-left:0}.sidebar-brand-row{display:flex;align-items:center;gap:5px}.sidebar-brand-row .brand{flex:1;min-width:0}.sidebar-toggle-side{color:#d7e0eb;background:#263244;border:1px solid #37465b;padding:6px 9px}.sidebar-toggle-side:hover{background:#37465b}.topbar{justify-content:flex-start;gap:16px}.topbar-left{display:flex;align-items:center;gap:12px;min-width:0}.sidebar-toggle{flex:none;padding:8px 11px}.crumb{white-space:nowrap}.top-actions{margin-left:auto}.profile{align-items:stretch;flex-direction:column;gap:12px}.profile-user{display:flex;align-items:center;gap:10px;min-width:0}.logout-form{width:100%}.logout-button{width:100%;background:#263244;color:#fff;justify-content:flex-start;padding:9px 11px}.logout-button:hover{background:#37465b}
         .verification-dialog{width:min(500px,calc(100% - 28px));border:1px solid var(--line);border-radius:14px;padding:22px;background:#fff;color:var(--ink);box-shadow:var(--shadow)}.verification-dialog::backdrop{background:rgba(17,24,39,.58);backdrop-filter:blur(3px)}.verification-dialog-head{display:flex;align-items:flex-start;gap:12px;margin-bottom:16px}.verification-dialog-head>div{flex:1}.verification-dialog-head h2{font-size:17px;margin:0 0 5px}.verification-dialog-head p{font-size:12px;color:var(--muted);margin:0}.verification-icon{width:30px;height:30px;flex:none;border-radius:50%;display:grid;place-items:center;background:#fff3dc;color:#9b6400;font-weight:900}.verification-dialog .field{margin-bottom:13px}.verification-confirm:disabled{opacity:.5;cursor:not-allowed}
+        .verifier-dialog{width:min(900px,calc(100% - 28px));max-height:90vh;overflow:auto;border:1px solid var(--line);border-radius:16px;padding:24px;background:var(--canvas);color:var(--ink);box-shadow:var(--shadow)}
+        .verifier-dialog::backdrop{background:rgba(17,24,39,.62);backdrop-filter:blur(3px)}
+        .verifier-dialog-head{display:flex;justify-content:space-between;align-items:flex-start;gap:18px;margin-bottom:16px}
+        .verifier-dialog-head h2{font-size:22px;line-height:1.25;margin:5px 0}
+        .verifier-dialog-head p{font-size:12px;color:var(--muted);margin:0}
+        .verifier-required-note{display:flex;align-items:flex-start;gap:11px;padding:13px 15px;border:1px solid #f1dfb5;border-radius:10px;background:#fff8e9;color:#805600}
+        .verifier-required-note>span{display:grid;place-items:center;flex:none;width:22px;height:22px;border-radius:50%;background:#ffedc2;font-weight:800}
+        .verifier-required-note p{font-size:12px;margin:0}
+        .verifier-required-note strong{color:#684700}
+        .verifier-modal-form{margin-top:16px;border-top:1px solid var(--line);padding-top:8px}
+        .verifier-modal-form>.btn{margin-top:10px}
+        .verifier-dialog .question-builder{background:#fff}
+        @media(max-width:600px){.verifier-dialog{width:calc(100% - 20px);max-height:calc(100% - 20px);padding:16px}.verifier-dialog-head h2{font-size:19px}}
         .password-control{position:relative}.password-control input{padding-right:48px}.password-visibility{position:absolute;right:7px;top:50%;transform:translateY(-50%);display:grid;place-items:center;width:34px;height:34px;border:0;background:transparent;color:var(--muted);padding:7px;border-radius:6px}.password-visibility:hover{background:var(--mint);color:var(--accent)}.password-visibility:focus-visible{outline:2px solid var(--accent);outline-offset:2px}.password-visibility svg{width:18px;height:18px;fill:none;stroke:currentColor;stroke-width:1.8;stroke-linecap:round;stroke-linejoin:round}.password-visibility [hidden]{display:none}
         .public-shell .main{margin-left:0}.public-shell .topbar{padding:0 24px}.public-shell .brand{padding:0}
         @media(max-width:900px){.shell:not(.sidebar-hidden)::before{content:"";position:fixed;inset:0;background:rgba(17,24,39,.42);z-index:2}.sidebar{width:254px;padding:20px 18px;transform:translateX(-100%)}.shell:not(.sidebar-hidden) .sidebar{transform:translateX(0)}.shell.sidebar-hidden .sidebar{transform:translateX(-100%)}.main,.shell.sidebar-hidden .main{margin-left:0}.topbar{position:sticky;z-index:5;padding:0 20px}.topbar-toggle,.shell:not(.sidebar-hidden) .topbar-toggle{visibility:visible}.content{width:100%;padding:26px 20px 44px}.table-wrap{max-width:100%;overflow-x:auto;-webkit-overflow-scrolling:touch}.panel-head{flex-wrap:wrap;align-items:flex-start}.panel-head>.btn{flex:none}.login-page{grid-template-columns:1fr}.login-aside{min-height:245px;padding:24px}.login-copy{margin:37px 0 12px}.login-copy h1{font-size:32px}.login-footer{display:none}.login-form-side{padding:34px 23px}}
@@ -2309,11 +2322,78 @@ $csrf = h($_SESSION['csrf']);
                         <?php if (!$visibleSubmissions): ?><div class="empty"><strong>Belum ada hasil pengisian</strong>Hasil checklist akan muncul di sini setelah responden mengirim form.</div><?php else: ?>
                         <div class="table-wrap"><table><thead><tr><th>Checklist / responden</th><th>Email responden</th><th>Waktu dikirim</th><th>Status email</th><th>Status verifikasi</th><th>Aksi</th></tr></thead><tbody>
                             <?php foreach (($page === 'my-submissions' ? $historyPageSubmissions : array_slice($visibleSubmissions, 0, 12)) as $submission): ?>
-                                <tr<?= $page === 'my-submissions' && $submission['id'] === $requestedSubmissionId ? ' id="submission-' . h($submission['id']) . '"' : '' ?>><td><div class="person"><div class="person-dot"><?= h(strtoupper(substr($submission['respondent'], 0, 1))) ?></div><div><strong><?= h($submission['formTitle']) ?></strong><div class="muted" style="font-size:10px"><?= h($submission['respondent']) ?></div></div></div></td><td><?= h($submission['respondentEmail']) ?></td><td><?= h(date('d M Y, H:i', strtotime($submission['submittedAt']))) ?> WIT</td><td><span class="badge <?= str_starts_with($submission['emailStatus'], 'Terkirim') ? 'approved' : 'failed' ?>"><?= h($submission['emailStatus']) ?></span></td><td><span class="badge <?= $submission['status'] === 'Disetujui' ? 'approved' : 'pending' ?>"><?= h(checklistStatusLabel($submission['status'])) ?></span><?php if ($submission['status'] === 'Disetujui'): ?><div class="muted" style="font-size:9px;margin-top:4px">Diverifikasi oleh <?= h($submission['approvedBy']) ?></div><?php endif; ?></td><td><?php if (canApproveSubmission($user, $submission) && $submission['status'] === 'Menunggu approval'): ?><span class="muted">Isi verifikasi di bawah</span><?php else: ?><span class="muted"><?= $submission['status'] === 'Menunggu approval' ? 'Tidak ada aksi' : 'Selesai' ?></span><?php endif; ?></td></tr>
+                                <tr<?= $page === 'my-submissions' && $submission['id'] === $requestedSubmissionId ? ' id="submission-' . h($submission['id']) . '"' : '' ?>>
+                                    <td>
+                                        <div class="person">
+                                            <div class="person-dot"><?= h(strtoupper(substr($submission['respondent'], 0, 1))) ?></div>
+                                            <div><strong><?= h($submission['formTitle']) ?></strong><div class="muted" style="font-size:10px"><?= h($submission['respondent']) ?></div></div>
+                                        </div>
+                                    </td>
+                                    <td><?= h($submission['respondentEmail']) ?></td>
+                                    <td><?= h(date('d M Y, H:i', strtotime($submission['submittedAt']))) ?> WIT</td>
+                                    <td><span class="badge <?= str_starts_with($submission['emailStatus'], 'Terkirim') ? 'approved' : 'failed' ?>"><?= h($submission['emailStatus']) ?></span></td>
+                                    <td>
+                                        <span class="badge <?= $submission['status'] === 'Disetujui' ? 'approved' : 'pending' ?>"><?= h(checklistStatusLabel($submission['status'])) ?></span>
+                                        <?php if ($submission['status'] === 'Disetujui'): ?><div class="muted" style="font-size:9px;margin-top:4px">Diverifikasi oleh <?= h($submission['approvedBy']) ?></div><?php endif; ?>
+                                    </td>
+                                    <td>
+                                        <?php if (canApproveSubmission($user, $submission) && $submission['status'] === 'Menunggu approval'): ?>
+                                            <button class="btn btn-primary btn-small" type="button" data-open-verifier-dialog="verifier-dialog-<?= h($submission['id']) ?>" aria-controls="verifier-dialog-<?= h($submission['id']) ?>" aria-haspopup="dialog">✓ Verify Checklist</button>
+                                        <?php else: ?>
+                                            <span class="muted"><?= $submission['status'] === 'Menunggu approval' ? 'Tidak ada aksi' : 'Selesai' ?></span>
+                                        <?php endif; ?>
+                                    </td>
+                                </tr>
                                 <tr><td colspan="6"><details <?= $page === 'my-submissions' && $submission['id'] === $requestedSubmissionId ? 'open' : '' ?>><summary style="cursor:pointer;color:#617080;font-size:10px">Lihat jawaban (<?= count($submission['answers']) ?>)</summary><div class="submission-detail"><?php foreach ($submission['answers'] as $index => $answer): ?><p><strong><?= $index + 1 ?>. <?= h($answer['question']) ?></strong><br>Jawaban: <?php if (($answer['type'] ?? 'yes_no') === 'text'): ?><span style="white-space:pre-wrap;overflow-wrap:anywhere"><?= h($answer['choice']) ?></span><?php else: ?><span class="badge <?= $answer['choice'] === 'Ya' ? 'approved' : '' ?>"><?= h($answer['choice']) ?></span><?php endif; ?><?php if (($answer['type'] ?? '') === 'verification' && $answer['choice'] === 'Tidak'): ?><br><span class="muted"><?= h($answer['verificationMessage'] ?? 'Peringatan') ?></span><br>Pilihan: <span class="badge"><?= h($answer['verificationAnswer'] ?? '') ?></span><?php endif; ?><?php if (($answer['type'] ?? 'yes_no') === 'yes_no' && $answer['choice'] === 'Ya'): ?><?php if (($answer['followup'] ?? '') !== ''): ?><br><?= h($answer['followup']) ?>: <?= h($answer['followupAnswer'] ?? '') ?><?php endif; ?><?php foreach ($answer['followupChoiceAnswers'] ?? [] as $followupChoiceAnswer): ?><br><?= h($followupChoiceAnswer['question']) ?>: <span class="badge"><?= h($followupChoiceAnswer['choice']) ?></span><?php endforeach; ?><?php endif; ?></p><?php endforeach; ?><p class="muted">Supervisor: <?= h($submission['supervisorName']) ?><?= $submission['approvedAt'] !== '' ? ' · Verified ' . h(date('d M Y, H:i', strtotime($submission['approvedAt']))) . ' WIT' : '' ?></p><?php if (($submission['approvalEmailStatus'] ?? '') !== ''): ?><p class="muted">Status email pemberitahuan ke responden: <span class="badge <?= str_starts_with($submission['approvalEmailStatus'], 'Terkirim') ? 'approved' : 'failed' ?>"><?= h($submission['approvalEmailStatus']) ?></span></p><?php endif; ?></div></details></td></tr>
-                                <tr><td colspan="6"><details <?= canApproveSubmission($user, $submission) && $submission['status'] === 'Menunggu approval' ? 'open' : '' ?>><summary style="cursor:pointer;color:#617080;font-size:10px">Jawaban Supervisor/Verifikator<?= $submission['status'] === 'Menunggu approval' && canApproveSubmission($user, $submission) ? ' — wajib diisi sebelum verifikasi' : '' ?></summary><div class="submission-detail"><?php if ($submission['status'] === 'Menunggu approval' && canApproveSubmission($user, $submission)): ?><?= renderVerifierForm($submission, $csrf) ?><?php elseif (!empty($submission['verifierAnswers'])): ?><?php foreach ($submission['verifierAnswers'] as $verifierAnswer): ?><p><strong><?= h((string) ($verifierAnswer['question'] ?? '')) ?></strong><br>Jawaban verifikator: <?= h((string) ($verifierAnswer['choice'] ?? '')) ?><?php if (($verifierAnswer['verificationAnswer'] ?? '') !== ''): ?><br>Alasan: <?= h((string) $verifierAnswer['verificationAnswer']) ?><?php endif; ?><?php if (($verifierAnswer['followupAnswer'] ?? '') !== ''): ?><br><?= h((string) ($verifierAnswer['followup'] ?? 'Tindak lanjut')) ?>: <?= h((string) $verifierAnswer['followupAnswer']) ?><?php endif; ?><?php foreach (($verifierAnswer['followupChoiceAnswers'] ?? []) as $followupAnswer): ?><?php if (is_array($followupAnswer)): ?><br><?= h((string) ($followupAnswer['question'] ?? '')) ?>: <?= h((string) ($followupAnswer['choice'] ?? '')) ?><?php endif; ?><?php endforeach; ?></p><?php endforeach; ?><?php else: ?><p class="muted">Belum ada jawaban verifikator.</p><?php endif; ?></div></details></td></tr>
+                                <tr>
+                                    <td colspan="6">
+                                        <details <?= $page === 'my-submissions' && $submission['id'] === $requestedSubmissionId ? 'open' : '' ?>>
+                                            <summary style="cursor:pointer;color:#617080;font-size:10px">Jawaban Supervisor/Verifikator</summary>
+                                            <div class="submission-detail">
+                                                <?php if ($submission['status'] === 'Menunggu approval' && canApproveSubmission($user, $submission)): ?>
+                                                    <p class="muted">Pilih <strong>Verify Checklist</strong> pada kolom Aksi untuk mengisi jawaban wajib sebelum verifikasi.</p>
+                                                <?php elseif (!empty($submission['verifierAnswers'])): ?>
+                                                    <?php foreach ($submission['verifierAnswers'] as $verifierAnswer): ?>
+                                                        <p>
+                                                            <strong><?= h((string) ($verifierAnswer['question'] ?? '')) ?></strong><br>
+                                                            Jawaban verifikator: <?= h((string) ($verifierAnswer['choice'] ?? '')) ?>
+                                                            <?php if (($verifierAnswer['verificationAnswer'] ?? '') !== ''): ?><br>Alasan: <?= h((string) $verifierAnswer['verificationAnswer']) ?><?php endif; ?>
+                                                            <?php if (($verifierAnswer['followupAnswer'] ?? '') !== ''): ?><br><?= h((string) ($verifierAnswer['followup'] ?? 'Tindak lanjut')) ?>: <?= h((string) $verifierAnswer['followupAnswer']) ?><?php endif; ?>
+                                                            <?php foreach (($verifierAnswer['followupChoiceAnswers'] ?? []) as $followupAnswer): ?>
+                                                                <?php if (is_array($followupAnswer)): ?><br><?= h((string) ($followupAnswer['question'] ?? '')) ?>: <?= h((string) ($followupAnswer['choice'] ?? '')) ?><?php endif; ?>
+                                                            <?php endforeach; ?>
+                                                        </p>
+                                                    <?php endforeach; ?>
+                                                <?php else: ?>
+                                                    <p class="muted">Belum ada jawaban verifikator.</p>
+                                                <?php endif; ?>
+                                            </div>
+                                        </details>
+                                    </td>
+                                </tr>
                             <?php endforeach; ?>
-                        </tbody></table></div><?php endif; ?>
+                        </tbody></table></div>
+                        <?php foreach (($page === 'my-submissions' ? $historyPageSubmissions : array_slice($visibleSubmissions, 0, 12)) as $submission): ?>
+                            <?php if (canApproveSubmission($user, $submission) && $submission['status'] === 'Menunggu approval'): ?>
+                                <?php $verifierDialogId = 'verifier-dialog-' . $submission['id']; ?>
+                                <dialog class="verifier-dialog" id="<?= h($verifierDialogId) ?>" aria-labelledby="<?= h($verifierDialogId) ?>-title">
+                                    <div class="verifier-dialog-head">
+                                        <div>
+                                            <div class="eyebrow">Verifikasi checklist</div>
+                                            <h2 id="<?= h($verifierDialogId) ?>-title"><?= h($submission['formTitle']) ?></h2>
+                                            <p><?= h($submission['respondent']) ?> · <?= h(date('d M Y, H:i', strtotime($submission['submittedAt']))) ?> WIT</p>
+                                        </div>
+                                        <button class="btn btn-light btn-small" type="button" data-close-verifier-dialog aria-label="Tutup form verifikasi">Tutup</button>
+                                    </div>
+                                    <div class="verifier-required-note">
+                                        <span aria-hidden="true">!</span>
+                                        <p><strong>Jawaban Supervisor/Verifikator</strong><br>Wajib diisi sebelum checklist diverifikasi.</p>
+                                    </div>
+                                    <?= renderVerifierForm($submission, $csrf) ?>
+                                </dialog>
+                            <?php endif; ?>
+                        <?php endforeach; ?>
+                        <?php endif; ?>
                     </section>
                 <?php else: ?>
                     <div class="empty"><strong>Halaman tidak ditemukan</strong>Halaman ini tidak tersedia untuk akun Anda.</div>
@@ -2346,6 +2426,25 @@ $csrf = h($_SESSION['csrf']);
                 form.addEventListener('change', (event) => {
                     if (event.target.matches('.verifier-choice')) {
                         updateConditionalFields(event.target.dataset.index);
+                    }
+                });
+            });
+
+            document.querySelectorAll('[data-open-verifier-dialog]').forEach((button) => {
+                button.addEventListener('click', () => {
+                    const dialog = document.getElementById(button.dataset.openVerifierDialog);
+                    if (dialog && typeof dialog.showModal === 'function') {
+                        dialog.showModal();
+                    }
+                });
+            });
+            document.querySelectorAll('.verifier-dialog').forEach((dialog) => {
+                dialog.querySelectorAll('[data-close-verifier-dialog]').forEach((button) => {
+                    button.addEventListener('click', () => dialog.close());
+                });
+                dialog.addEventListener('click', (event) => {
+                    if (event.target === dialog) {
+                        dialog.close();
                     }
                 });
             });
