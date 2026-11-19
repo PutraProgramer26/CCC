@@ -153,6 +153,21 @@ function ensureCccSchema(PDO $connection): void
             meta_value VARCHAR(255) NOT NULL
         ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci"
     );
+    $connection->exec(
+        "CREATE TABLE IF NOT EXISTS ccc_sop_files (
+            id CHAR(32) NOT NULL PRIMARY KEY,
+            title VARCHAR(120) NOT NULL,
+            description VARCHAR(500) NOT NULL DEFAULT '',
+            original_name VARCHAR(255) NOT NULL,
+            stored_name VARCHAR(40) NOT NULL,
+            mime_type VARCHAR(100) NOT NULL,
+            file_size INT UNSIGNED NOT NULL,
+            thumbnail_name VARCHAR(40) NOT NULL DEFAULT '',
+            created_at VARCHAR(35) NOT NULL,
+            updated_at VARCHAR(35) NOT NULL,
+            INDEX idx_ccc_sop_files_updated_at (updated_at)
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci"
+    );
 }
 
 function fetchCccData(PDO $connection): array

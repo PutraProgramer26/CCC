@@ -11,18 +11,21 @@ session_start();
 
 const APP_NAME = 'CRITICAL CONTROL CHECKLIST';
 const MAX_IMAGE_SIZE = 4_194_304;
+const MAX_SOP_FILE_SIZE = 4_194_304;
+const MAX_SOP_THUMBNAIL_SIZE = 2_097_152;
 const DEFAULT_CCC_APP_URL = 'https://jastik3.site';
 
 $privateDirectoryLevel = basename(__DIR__) === 'public_html' ? 1 : 2;
 $privateDir = dirname(__DIR__, $privateDirectoryLevel) . DIRECTORY_SEPARATOR . 'ccc-private';
 $uploadDir = $privateDir . DIRECTORY_SEPARATOR . 'uploads';
+$sopUploadDir = $uploadDir . DIRECTORY_SEPARATOR . 'sop';
 $uploadDirectories = array_values(array_unique([
     $uploadDir,
     dirname(__DIR__, 2) . DIRECTORY_SEPARATOR . 'ccc-private' . DIRECTORY_SEPARATOR . 'uploads',
 ]));
 $dataFile = $privateDir . DIRECTORY_SEPARATOR . 'data.json';
 
-foreach ([$privateDir, $uploadDir] as $directory) {
+foreach ([$privateDir, $uploadDir, $sopUploadDir] as $directory) {
     if (!is_dir($directory) && !mkdir($directory, 0700, true) && !is_dir($directory)) {
         http_response_code(500);
         exit('Folder penyimpanan aplikasi tidak dapat dibuat. Periksa izin folder XAMPP.');
@@ -652,8 +655,15 @@ function canApproveSubmission(?array $user, array $submission): bool
     if (($user['role'] ?? '') === 'Supervisor') {
         return ($submission['supervisor'] ?? null) === ($user['username'] ?? null);
     }
-    return ($user['role'] ?? '') === 'PJO'
+    return in_array($user['role'] ?? '', ['PJO', 'HSE'], true)
         && strcasecmp(trim((string) ($submission['supervisorEmail'] ?? '')), trim((string) ($user['email'] ?? ''))) === 0;
+}
+
+function canManageSop(?array $user): bool
+{
+    return $user !== null
+        && ($user['isActive'] ?? true)
+        && in_array($user['role'] ?? '', ['Administrator', 'HSE'], true);
 }
 
 function loadData(string $file): array
@@ -734,6 +744,25 @@ function saveData(string $file, array $data): void
     $GLOBALS['cccDataSnapshot'] = $data;
 }
 
+function fetchSopFiles(PDO $connection): array
+{
+    return $connection->query(
+        'SELECT id, title, description, original_name, stored_name, mime_type, file_size, thumbnail_name, created_at, updated_at
+         FROM ccc_sop_files ORDER BY updated_at DESC, id DESC'
+    )->fetchAll();
+}
+
+function fetchSopFile(PDO $connection, string $id): ?array
+{
+    $statement = $connection->prepare(
+        'SELECT id, title, description, original_name, stored_name, mime_type, file_size, thumbnail_name, created_at, updated_at
+         FROM ccc_sop_files WHERE id = :id'
+    );
+    $statement->execute(['id' => $id]);
+    $record = $statement->fetch();
+    return is_array($record) ? $record : null;
+}
+
 function redirectTo(string $query = ''): never
 {
     header('Location: index.php' . ($query !== '' ? '?' . $query : ''));
@@ -784,6 +813,108 @@ function storeImage(array $upload, string $directory): string
         throw new RuntimeException('Gambar tidak dapat disimpan. Periksa izin folder uploads.');
     }
     return $filename;
+}
+
+function storeSopDocument(array $upload, string $directory): array
+{
+    if (($upload['error'] ?? UPLOAD_ERR_NO_FILE) !== UPLOAD_ERR_OK) {
+        throw new RuntimeException(($upload['error'] ?? UPLOAD_ERR_NO_FILE) === UPLOAD_ERR_NO_FILE
+            ? 'Pilih file SOP yang akan diunggah.'
+            : 'File SOP gagal diunggah. Pastikan ukuran maksimal 4 MB.');
+    }
+    $temporaryPath = $upload['tmp_name'] ?? '';
+    $size = is_string($temporaryPath) && is_file($temporaryPath) ? filesize($temporaryPath) : false;
+    if (!is_string($temporaryPath) || !is_uploaded_file($temporaryPath) || $size === false || $size < 1 || $size > MAX_SOP_FILE_SIZE) {
+        throw new RuntimeException('Ukuran file SOP harus lebih dari 0 dan maksimal 4 MB.');
+    }
+
+    $originalName = basename(str_replace('\\', '/', (string) ($upload['name'] ?? '')));
+    $extension = strtolower((string) pathinfo($originalName, PATHINFO_EXTENSION));
+    $allowedMimeTypes = [
+        'pdf' => ['application/pdf'],
+        'doc' => ['application/msword', 'application/x-ole-storage', 'application/vnd.ms-office'],
+        'docx' => ['application/vnd.openxmlformats-officedocument.wordprocessingml.document', 'application/zip'],
+        'xls' => ['application/vnd.ms-excel', 'application/x-ole-storage', 'application/vnd.ms-office'],
+        'xlsx' => ['application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', 'application/zip'],
+    ];
+    if (!isset($allowedMimeTypes[$extension])) {
+        throw new RuntimeException('Format file SOP harus PDF, DOC, DOCX, XLS, atau XLSX.');
+    }
+    $mimeType = (new finfo(FILEINFO_MIME_TYPE))->file($temporaryPath);
+    if (!is_string($mimeType) || !in_array($mimeType, $allowedMimeTypes[$extension], true)) {
+        throw new RuntimeException('Isi file tidak sesuai dengan ekstensi PDF, Word, atau Excel yang dipilih.');
+    }
+    if ($originalName === '' || strlen($originalName) > 255 || !preg_match('//u', $originalName)) {
+        throw new RuntimeException('Nama file SOP tidak valid atau terlalu panjang.');
+    }
+
+    $storedName = bin2hex(random_bytes(16)) . '.' . $extension;
+    if (!move_uploaded_file($temporaryPath, $directory . DIRECTORY_SEPARATOR . $storedName)) {
+        throw new RuntimeException('File SOP tidak dapat disimpan. Periksa izin folder penyimpanan.');
+    }
+
+    return [
+        'originalName' => $originalName,
+        'storedName' => $storedName,
+        'mimeType' => $mimeType,
+        'size' => (int) $size,
+    ];
+}
+
+function storeSopThumbnail(array $upload, string $directory): string
+{
+    if (($upload['error'] ?? UPLOAD_ERR_NO_FILE) === UPLOAD_ERR_NO_FILE) {
+        return '';
+    }
+    if (($upload['error'] ?? UPLOAD_ERR_OK) !== UPLOAD_ERR_OK) {
+        throw new RuntimeException('Thumbnail gagal diunggah. Pastikan ukuran maksimal 2 MB.');
+    }
+    $temporaryPath = $upload['tmp_name'] ?? '';
+    $size = is_string($temporaryPath) && is_file($temporaryPath) ? filesize($temporaryPath) : false;
+    if (!is_string($temporaryPath) || !is_uploaded_file($temporaryPath) || $size === false || $size < 1 || $size > MAX_SOP_THUMBNAIL_SIZE) {
+        throw new RuntimeException('Ukuran thumbnail harus lebih dari 0 dan maksimal 2 MB.');
+    }
+
+    $mimeType = (new finfo(FILEINFO_MIME_TYPE))->file($temporaryPath);
+    $extensions = ['image/jpeg' => 'jpg', 'image/png' => 'png', 'image/webp' => 'webp'];
+    $imageInfo = getimagesize($temporaryPath);
+    if (!is_string($mimeType) || !isset($extensions[$mimeType]) || $imageInfo === false || $imageInfo['mime'] !== $mimeType) {
+        throw new RuntimeException('Thumbnail harus berupa gambar JPG, PNG, atau WEBP yang valid.');
+    }
+
+    $storedName = bin2hex(random_bytes(16)) . '.' . $extensions[$mimeType];
+    if (!move_uploaded_file($temporaryPath, $directory . DIRECTORY_SEPARATOR . $storedName)) {
+        throw new RuntimeException('Thumbnail tidak dapat disimpan. Periksa izin folder penyimpanan.');
+    }
+
+    return $storedName;
+}
+
+function sopAssetPath(string $filename, string $directory): ?string
+{
+    if (!preg_match('/^[a-f0-9]{32}\.(pdf|doc|docx|xls|xlsx|jpg|png|webp)$/', $filename)) {
+        return null;
+    }
+    $path = $directory . DIRECTORY_SEPARATOR . $filename;
+    return is_file($path) ? $path : null;
+}
+
+function removeSopAssets(array $record, string $directory): bool
+{
+    $removed = true;
+    foreach (['stored_name', 'thumbnail_name'] as $field) {
+        $filename = (string) ($record[$field] ?? '');
+        if ($filename === '') {
+            continue;
+        }
+        $path = sopAssetPath($filename, $directory);
+        if ($path !== null && !unlink($path)) {
+            error_log('CCC SOP asset cleanup failed for ' . $filename . '.');
+            $removed = false;
+        }
+    }
+
+    return $removed;
 }
 
 function getUploadedFile(string $field, int $index): array
@@ -993,6 +1124,58 @@ try {
 } catch (Throwable $exception) {
     http_response_code(500);
     exit(h($exception->getMessage()));
+}
+
+if (isset($_GET['sop_file'])) {
+    $sopId = (string) $_GET['sop_file'];
+    $record = preg_match('/^[a-f0-9]{32}$/', $sopId) ? fetchSopFile($pdo, $sopId) : null;
+    $path = $record !== null ? sopAssetPath((string) $record['stored_name'], $sopUploadDir) : null;
+    if ($record === null || $path === null) {
+        http_response_code(404);
+        exit('File SOP tidak ditemukan.');
+    }
+
+    $mimeType = (new finfo(FILEINFO_MIME_TYPE))->file($path);
+    if (!is_string($mimeType) || $mimeType !== $record['mime_type']) {
+        http_response_code(415);
+        exit('File SOP tidak dapat disajikan karena formatnya tidak valid.');
+    }
+    $downloadName = basename(str_replace('\\', '/', (string) $record['original_name']));
+    $asciiName = preg_replace('/[^A-Za-z0-9._-]/', '_', $downloadName);
+    if (!is_string($asciiName) || $asciiName === '') {
+        $asciiName = 'sop-file';
+    }
+    header('Content-Type: ' . $mimeType);
+    header('Content-Disposition: attachment; filename="' . $asciiName . '"; filename*=UTF-8\'\'' . rawurlencode($downloadName));
+    header('Content-Length: ' . filesize($path));
+    header('X-Content-Type-Options: nosniff');
+    header('Cache-Control: public, max-age=3600');
+    readfile($path);
+    exit;
+}
+
+if (isset($_GET['sop_thumbnail'])) {
+    $sopId = (string) $_GET['sop_thumbnail'];
+    $record = preg_match('/^[a-f0-9]{32}$/', $sopId) ? fetchSopFile($pdo, $sopId) : null;
+    $path = $record !== null && $record['thumbnail_name'] !== ''
+        ? sopAssetPath((string) $record['thumbnail_name'], $sopUploadDir)
+        : null;
+    if ($record === null || $path === null) {
+        http_response_code(404);
+        exit;
+    }
+
+    $mimeType = (new finfo(FILEINFO_MIME_TYPE))->file($path);
+    if (!in_array($mimeType, ['image/jpeg', 'image/png', 'image/webp'], true)) {
+        http_response_code(415);
+        exit;
+    }
+    header('Content-Type: ' . $mimeType);
+    header('Content-Length: ' . filesize($path));
+    header('X-Content-Type-Options: nosniff');
+    header('Cache-Control: public, max-age=3600');
+    readfile($path);
+    exit;
 }
 
 if (isset($_GET['media'])) {
@@ -1215,6 +1398,143 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             throw new RuntimeException('Silakan masuk terlebih dahulu.');
         }
 
+        if ($action === 'create_sop' && canManageSop($currentUser)) {
+            $title = trim((string) ($_POST['title'] ?? ''));
+            $description = trim((string) ($_POST['description'] ?? ''));
+            $titleLength = function_exists('mb_strlen') ? mb_strlen($title, 'UTF-8') : strlen($title);
+            $descriptionLength = function_exists('mb_strlen') ? mb_strlen($description, 'UTF-8') : strlen($description);
+            if ($title === '' || $titleLength > 120 || $descriptionLength > 500) {
+                throw new RuntimeException('Judul SOP wajib diisi (maksimal 120 karakter) dan deskripsi maksimal 500 karakter.');
+            }
+
+            $document = storeSopDocument(getSingleUploadedFile('sop_file'), $sopUploadDir);
+            try {
+                $thumbnailName = storeSopThumbnail(getSingleUploadedFile('sop_thumbnail'), $sopUploadDir);
+            } catch (Throwable $exception) {
+                removeSopAssets(['stored_name' => $document['storedName']], $sopUploadDir);
+                throw $exception;
+            }
+
+            $sopId = bin2hex(random_bytes(16));
+            $createdAt = date(DATE_ATOM);
+            try {
+                $statement = $pdo->prepare(
+                    'INSERT INTO ccc_sop_files (id, title, description, original_name, stored_name, mime_type, file_size, thumbnail_name, created_at, updated_at)
+                     VALUES (:id, :title, :description, :original_name, :stored_name, :mime_type, :file_size, :thumbnail_name, :created_at, :updated_at)'
+                );
+                $statement->execute([
+                    'id' => $sopId,
+                    'title' => $title,
+                    'description' => $description,
+                    'original_name' => $document['originalName'],
+                    'stored_name' => $document['storedName'],
+                    'mime_type' => $document['mimeType'],
+                    'file_size' => $document['size'],
+                    'thumbnail_name' => $thumbnailName,
+                    'created_at' => $createdAt,
+                    'updated_at' => $createdAt,
+                ]);
+            } catch (Throwable $exception) {
+                removeSopAssets([
+                    'stored_name' => $document['storedName'],
+                    'thumbnail_name' => $thumbnailName,
+                ], $sopUploadDir);
+                error_log('CCC SOP creation failed: ' . $exception->getMessage());
+                throw new RuntimeException('Arsip SOP gagal disimpan ke database.', 0, $exception);
+            }
+
+            setFlash('success', 'File SOP berhasil ditambahkan.');
+            redirectTo('page=sop');
+        }
+
+        if ($action === 'update_sop' && canManageSop($currentUser)) {
+            $sopId = (string) ($_POST['sop_id'] ?? '');
+            $record = preg_match('/^[a-f0-9]{32}$/', $sopId) ? fetchSopFile($pdo, $sopId) : null;
+            if ($record === null) {
+                throw new RuntimeException('Arsip SOP yang akan diedit tidak ditemukan.');
+            }
+
+            $title = trim((string) ($_POST['title'] ?? ''));
+            $description = trim((string) ($_POST['description'] ?? ''));
+            $titleLength = function_exists('mb_strlen') ? mb_strlen($title, 'UTF-8') : strlen($title);
+            $descriptionLength = function_exists('mb_strlen') ? mb_strlen($description, 'UTF-8') : strlen($description);
+            if ($title === '' || $titleLength > 120 || $descriptionLength > 500) {
+                throw new RuntimeException('Judul SOP wajib diisi (maksimal 120 karakter) dan deskripsi maksimal 500 karakter.');
+            }
+
+            $documentUpload = getSingleUploadedFile('sop_file');
+            $newDocument = ($documentUpload['error'] ?? UPLOAD_ERR_NO_FILE) === UPLOAD_ERR_NO_FILE
+                ? null
+                : storeSopDocument($documentUpload, $sopUploadDir);
+            try {
+                $newThumbnail = storeSopThumbnail(getSingleUploadedFile('sop_thumbnail'), $sopUploadDir);
+            } catch (Throwable $exception) {
+                if ($newDocument !== null) {
+                    removeSopAssets(['stored_name' => $newDocument['storedName']], $sopUploadDir);
+                }
+                throw $exception;
+            }
+
+            $removeThumbnail = ($_POST['remove_sop_thumbnail'] ?? '') === '1';
+            $storedName = $newDocument['storedName'] ?? $record['stored_name'];
+            $originalName = $newDocument['originalName'] ?? $record['original_name'];
+            $mimeType = $newDocument['mimeType'] ?? $record['mime_type'];
+            $fileSize = $newDocument['size'] ?? (int) $record['file_size'];
+            $thumbnailName = $newThumbnail !== ''
+                ? $newThumbnail
+                : ($removeThumbnail ? '' : $record['thumbnail_name']);
+            try {
+                $statement = $pdo->prepare(
+                    'UPDATE ccc_sop_files
+                     SET title = :title, description = :description, original_name = :original_name, stored_name = :stored_name,
+                         mime_type = :mime_type, file_size = :file_size, thumbnail_name = :thumbnail_name, updated_at = :updated_at
+                     WHERE id = :id'
+                );
+                $statement->execute([
+                    'title' => $title,
+                    'description' => $description,
+                    'original_name' => $originalName,
+                    'stored_name' => $storedName,
+                    'mime_type' => $mimeType,
+                    'file_size' => $fileSize,
+                    'thumbnail_name' => $thumbnailName,
+                    'updated_at' => date(DATE_ATOM),
+                    'id' => $sopId,
+                ]);
+            } catch (Throwable $exception) {
+                removeSopAssets([
+                    'stored_name' => $newDocument['storedName'] ?? '',
+                    'thumbnail_name' => $newThumbnail,
+                ], $sopUploadDir);
+                error_log('CCC SOP update failed: ' . $exception->getMessage());
+                throw new RuntimeException('Perubahan arsip SOP gagal disimpan ke database.', 0, $exception);
+            }
+
+            $removedOldAssets = removeSopAssets([
+                'stored_name' => $newDocument !== null ? $record['stored_name'] : '',
+                'thumbnail_name' => $newThumbnail !== '' || $removeThumbnail ? $record['thumbnail_name'] : '',
+            ], $sopUploadDir);
+            setFlash($removedOldAssets ? 'success' : 'warning', $removedOldAssets
+                ? 'Arsip SOP berhasil diperbarui.'
+                : 'Arsip SOP berhasil diperbarui, tetapi file lama tidak dapat dibersihkan. Hubungi administrator.');
+            redirectTo('page=sop');
+        }
+
+        if ($action === 'delete_sop' && canManageSop($currentUser)) {
+            $sopId = (string) ($_POST['sop_id'] ?? '');
+            $record = preg_match('/^[a-f0-9]{32}$/', $sopId) ? fetchSopFile($pdo, $sopId) : null;
+            if ($record === null) {
+                throw new RuntimeException('Arsip SOP yang akan dihapus tidak ditemukan.');
+            }
+            $statement = $pdo->prepare('DELETE FROM ccc_sop_files WHERE id = :id');
+            $statement->execute(['id' => $sopId]);
+            $removedAssets = removeSopAssets($record, $sopUploadDir);
+            setFlash($removedAssets ? 'success' : 'warning', $removedAssets
+                ? 'Arsip SOP berhasil dihapus.'
+                : 'Arsip SOP dihapus dari daftar, tetapi file fisiknya tidak dapat dibersihkan. Hubungi administrator.');
+            redirectTo('page=sop');
+        }
+
         if ($action === 'create_form' && $currentUser && $currentUser['role'] === 'Administrator') {
             $title = trim((string) ($_POST['title'] ?? ''));
             $description = trim((string) ($_POST['description'] ?? ''));
@@ -1309,7 +1629,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             if (!preg_match('/^[a-z0-9._-]{3,30}$/', $username) || isset($data['users'][$username])) {
                 throw new RuntimeException('Username harus 3–30 karakter (huruf, angka, titik, garis bawah, atau tanda hubung) dan belum digunakan.');
             }
-            if ($name === '' || !filter_var($email, FILTER_VALIDATE_EMAIL) || !in_array($role, ['Supervisor', 'PJO', 'Respondent'], true) || strlen($password) < 8) {
+            if ($name === '' || !filter_var($email, FILTER_VALIDATE_EMAIL) || !in_array($role, ['Supervisor', 'PJO', 'HSE', 'Respondent'], true) || strlen($password) < 8) {
                 throw new RuntimeException('Nama, email valid, role, dan kata sandi minimal 8 karakter wajib diisi.');
             }
             $data['users'][$username] = [
@@ -1340,7 +1660,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 : (string) ($_POST['role'] ?? '');
             $allowedRoles = $account['role'] === 'Administrator'
                 ? ['Administrator']
-                : ['Supervisor', 'PJO', 'Respondent'];
+                : ['Supervisor', 'PJO', 'HSE', 'Respondent'];
             if ($name === '' || (function_exists('mb_strlen') ? mb_strlen($name, 'UTF-8') : strlen($name)) > 100
                 || !filter_var($email, FILTER_VALIDATE_EMAIL)
                 || !in_array($role, $allowedRoles, true)
@@ -1466,8 +1786,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 ? (string) ($_POST['answer'][$supervisorQuestionIndex] ?? '')
                 : (string) ($_POST['supervisor'] ?? '');
             $supervisor = $data['users'][$supervisorUsername] ?? null;
-            if (!filter_var($email, FILTER_VALIDATE_EMAIL) || !$supervisor || !in_array($supervisor['role'], ['Supervisor', 'PJO'], true) || !($supervisor['isActive'] ?? true)) {
-                throw new RuntimeException('Periksa form, email responden, dan Supervisor/PJO yang dipilih.');
+            if (!filter_var($email, FILTER_VALIDATE_EMAIL) || !$supervisor || !in_array($supervisor['role'], ['Supervisor', 'PJO', 'HSE'], true) || !($supervisor['isActive'] ?? true)) {
+                throw new RuntimeException('Periksa form, email responden, dan Supervisor/PJO/HSE yang dipilih.');
             }
             $answers = [];
             foreach ($form['questions'] as $index => $question) {
@@ -1484,7 +1804,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 }
                 if ($type === 'supervisor') {
                     if ($choice !== $supervisorUsername) {
-                        throw new RuntimeException('Pilih Supervisor/PJO yang tersedia untuk menerima permintaan approval.');
+                        throw new RuntimeException('Pilih Supervisor/PJO/HSE yang tersedia untuk menerima permintaan approval.');
                     }
                     $choice = $supervisor['name'] . ' (' . $supervisor['email'] . ')';
                 }
@@ -1614,7 +1934,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             redirectTo('page=my-submissions');
         }
 
-        if ($action === 'approve' && $currentUser && in_array($currentUser['role'], ['Administrator', 'Supervisor', 'PJO'], true)) {
+        if ($action === 'approve' && $currentUser && in_array($currentUser['role'], ['Administrator', 'Supervisor', 'PJO', 'HSE'], true)) {
             $submissionId = (string) ($_POST['submission_id'] ?? '');
             $submissionIndex = null;
             foreach ($data['submissions'] as $index => &$submission) {
@@ -1622,7 +1942,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     continue;
                 }
                 if (!canApproveSubmission($currentUser, $submission)) {
-                    throw new RuntimeException('Checklist ini hanya dapat diverifikasi administrator, supervisor tujuan, atau PJO dengan email yang sama dengan tujuan supervisor.');
+                    throw new RuntimeException('Checklist ini hanya dapat diverifikasi administrator, supervisor tujuan, atau PJO/HSE dengan email yang sama dengan tujuan supervisor.');
                 }
                 if ($submission['status'] !== 'Menunggu approval') {
                     throw new RuntimeException('Checklist ini sudah diproses sebelumnya.');
@@ -1635,7 +1955,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 $submission['status'] = 'Disetujui';
                 $submission['approvedBy'] = $currentUser['name'];
                 $submission['approvedAt'] = date(DATE_ATOM);
-                $submission['approvalEmailStatus'] = in_array($currentUser['role'], ['Supervisor', 'PJO'], true) ? 'Menunggu pengiriman' : '';
+                $submission['approvalEmailStatus'] = in_array($currentUser['role'], ['Supervisor', 'PJO', 'HSE'], true) ? 'Menunggu pengiriman' : '';
                 $submissionIndex = $index;
                 break;
             }
@@ -1644,7 +1964,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 throw new RuntimeException('Data checklist tidak ditemukan.');
             }
             saveData($dataFile, $data);
-            if (in_array($currentUser['role'], ['Supervisor', 'PJO'], true)) {
+            if (in_array($currentUser['role'], ['Supervisor', 'PJO', 'HSE'], true)) {
                 $emailError = '';
                 try {
                     require_once __DIR__ . DIRECTORY_SEPARATOR . 'send_approval_email.php';
@@ -1678,6 +1998,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         }
         if ($action === 'submit_response' && (!$failedAccount || $failedAccount['role'] !== 'Respondent') && preg_match('/^[a-f0-9]{12}$/', $failedPublicFormId)) {
             redirectTo('page=fill&form=' . rawurlencode($failedPublicFormId));
+        }
+        if (in_array($action, ['create_sop', 'update_sop', 'delete_sop'], true)) {
+            redirectTo('page=sop');
         }
         redirectTo();
     }
@@ -1727,9 +2050,10 @@ if ($page === 'approve') {
 if (!$user && $page === 'forms') {
     $page = 'public-forms';
 }
+$sopFiles = $page === 'sop' ? fetchSopFiles($pdo) : [];
 $supervisors = array_filter(
     $data['users'],
-    static fn(array $item): bool => in_array($item['role'], ['Supervisor', 'PJO'], true) && ($item['isActive'] ?? true)
+    static fn(array $item): bool => in_array($item['role'], ['Supervisor', 'PJO', 'HSE'], true) && ($item['isActive'] ?? true)
 );
 $administratorCount = count(array_filter(
     $data['users'],
@@ -1753,7 +2077,7 @@ $visibleSubmissions = array_values(array_filter($data['submissions'], static fun
     if ($user['role'] === 'Supervisor') {
         return $submission['supervisor'] === $user['username'];
     }
-    if ($user['role'] === 'PJO') {
+    if (in_array($user['role'], ['PJO', 'HSE'], true)) {
         return true;
     }
     return $submission['respondent'] === $user['name'];
@@ -1835,6 +2159,7 @@ $formHasSupervisorQuestion = $selectedForm !== null && count(array_filter(
 )) > 0;
 $publicFormsRequest = !$user && $page === 'public-forms';
 $publicFormRequest = !$user && $page === 'fill';
+$publicSopRequest = !$user && $page === 'sop';
 $publicSubmissionComplete = $page === 'submitted';
 $csrf = h($_SESSION['csrf']);
 ?>
@@ -1904,7 +2229,7 @@ $csrf = h($_SESSION['csrf']);
     </style>
 </head>
 <body>
-<?php if (!$user && !$publicFormsRequest && !$publicFormRequest && !$publicSubmissionComplete): ?>
+<?php if (!$user && !$publicFormsRequest && !$publicFormRequest && !$publicSopRequest && !$publicSubmissionComplete): ?>
     <main class="login-page">
         <section class="login-aside">
             <div class="brand"><div class="brand-mark">C</div><div class="brand-name">CRITICAL CONTROL<span>CHECKLIST SYSTEM</span></div></div>
@@ -1963,7 +2288,7 @@ $csrf = h($_SESSION['csrf']);
     </script>
 <?php else:
     $role = $user['role'] ?? 'Public';
-    $pageTitles = ['dashboard' => 'Dashboard', 'public-forms' => 'Form checklist', 'forms' => 'Form checklist', 'edit-form' => 'Edit form', 'users' => 'Pengguna', 'my-submissions' => 'Riwayat pengisian', 'fill' => 'Isi checklist'];
+    $pageTitles = ['dashboard' => 'Dashboard', 'public-forms' => 'Form checklist', 'forms' => 'Form checklist', 'edit-form' => 'Edit form', 'users' => 'Pengguna', 'sop' => 'Arsip SOP', 'my-submissions' => 'Riwayat pengisian', 'fill' => 'Isi checklist'];
     $pageTitle = $pageTitles[$page] ?? 'Dashboard';
     $navItems = [];
     if ($role !== 'Respondent') {
@@ -1976,6 +2301,7 @@ $csrf = h($_SESSION['csrf']);
     if ($role === 'Respondent') {
         $navItems[] = ['dashboard', '▤', 'Isi checklist'];
     }
+    $navItems[] = ['sop', '▣', 'Arsip SOP'];
     $navItems[] = ['my-submissions', '◷', $role === 'Respondent' ? 'Riwayat saya' : 'Riwayat checklist'];
     $pendingCount = count(array_filter($visibleSubmissions, static fn(array $submission): bool => $submission['status'] === 'Menunggu approval'));
 ?>
@@ -1993,7 +2319,7 @@ $csrf = h($_SESSION['csrf']);
         </aside>
         <?php endif; ?>
         <main class="main">
-            <header class="topbar"><?php if ($user): ?><div class="topbar-left"><button type="button" class="btn btn-light sidebar-toggle topbar-toggle" aria-label="Tampilkan sidebar" title="Tampilkan / sembunyikan sidebar" aria-controls="app-sidebar" aria-expanded="true">☰</button><div class="crumb">CCC <span style="padding:0 7px;color:#aeb8c4">/</span> <b><?= h($pageTitle) ?></b></div></div><div class="top-actions"><span class="badge"><?= h($role) ?></span><span class="muted" style="font-size:11px"><?= date('d M Y') ?></span></div><?php else: ?><a class="brand" href="index.php"><div class="brand-mark">C</div><div class="brand-name">CRITICAL CONTROL<span>CHECKLIST SYSTEM</span></div></a><a class="btn btn-light btn-small" href="index.php?page=login">Masuk</a><?php endif; ?></header>
+            <header class="topbar"><?php if ($user): ?><div class="topbar-left"><button type="button" class="btn btn-light sidebar-toggle topbar-toggle" aria-label="Tampilkan sidebar" title="Tampilkan / sembunyikan sidebar" aria-controls="app-sidebar" aria-expanded="true">☰</button><div class="crumb">CCC <span style="padding:0 7px;color:#aeb8c4">/</span> <b><?= h($pageTitle) ?></b></div></div><div class="top-actions"><span class="badge"><?= h($role) ?></span><span class="muted" style="font-size:11px"><?= date('d M Y') ?></span></div><?php else: ?><a class="brand" href="index.php"><div class="brand-mark">C</div><div class="brand-name">CRITICAL CONTROL<span>CHECKLIST SYSTEM</span></div></a><div style="display:flex;align-items:center;gap:12px;margin-left:auto"><a href="index.php?page=sop" style="font-size:12px;font-weight:700">Arsip SOP</a><a class="btn btn-light btn-small" href="index.php?page=login">Masuk</a></div><?php endif; ?></header>
             <div class="content">
                 <?php if ($flash): ?><div class="alert <?= h($flash['type']) ?>"><?= h($flash['message']) ?></div><?php endif; ?>
 
@@ -2004,6 +2330,66 @@ $csrf = h($_SESSION['csrf']);
                         <h1 style="font-size:24px;margin:8px 0">Terima kasih</h1>
                         <p class="muted" style="margin:0">Hasil checklist Anda sudah direkam dan diteruskan ke supervisor untuk proses approval.</p>
                     </section>
+                <?php elseif ($page === 'sop'): ?>
+                    <div class="page-heading">
+                        <div><div class="eyebrow">Arsip dokumen publik</div><h1>Arsip SOP &amp; Permit</h1><p>File dapat diunduh oleh siapa saja melalui tautan file.</p></div>
+                    </div>
+                    <?php if (canManageSop($user)): ?>
+                        <section class="panel">
+                            <div class="panel-head"><div><h2 class="panel-title">Tambah arsip</h2><div class="panel-subtitle">PDF, Word, atau Excel maksimal 4 MB. Thumbnail JPG, PNG, atau WEBP maksimal 2 MB.</div></div></div>
+                            <form method="post" enctype="multipart/form-data">
+                                <input type="hidden" name="csrf" value="<?= $csrf ?>"><input type="hidden" name="action" value="create_sop">
+                                <div class="form-grid">
+                                    <div class="field"><label for="sop-title">Nama SOP / Permit</label><input id="sop-title" name="title" maxlength="120" required></div>
+                                    <div class="field"><label for="sop-file">File arsip</label><input id="sop-file" name="sop_file" type="file" accept=".pdf,.doc,.docx,.xls,.xlsx" required><span class="help">PDF, DOC, DOCX, XLS, XLSX · Maksimal 4 MB.</span></div>
+                                </div>
+                                <div class="field"><label for="sop-description">Deskripsi (opsional)</label><textarea id="sop-description" name="description" maxlength="500"></textarea></div>
+                                <div class="field"><label for="sop-thumbnail">Gambar thumbnail (opsional)</label><input id="sop-thumbnail" name="sop_thumbnail" type="file" accept="image/jpeg,image/png,image/webp"><span class="help">JPG, PNG, WEBP · Maksimal 2 MB.</span></div>
+                                <button class="btn btn-primary" type="submit">＋ Simpan arsip</button>
+                            </form>
+                        </section>
+                    <?php endif; ?>
+                    <?php if (!$sopFiles): ?>
+                        <div class="empty"><strong>Belum ada arsip SOP</strong><?php if (canManageSop($user)): ?>Tambahkan file pertama menggunakan formulir di atas.<?php else: ?>File SOP dan permit yang dibagikan akan tampil di sini.<?php endif; ?></div>
+                    <?php else: ?>
+                        <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,300px),1fr));gap:16px">
+                            <?php foreach ($sopFiles as $sopFile):
+                                $sopFileUrl = cccApplicationBaseUrl() . '/index.php?sop_file=' . rawurlencode($sopFile['id']);
+                            ?>
+                                <article class="panel" style="margin:0;display:flex;flex-direction:column">
+                                    <?php if ($sopFile['thumbnail_name'] !== ''): ?>
+                                        <img src="index.php?sop_thumbnail=<?= h($sopFile['id']) ?>" alt="Thumbnail <?= h($sopFile['title']) ?>" loading="lazy" style="width:100%;height:180px;object-fit:cover;border-radius:9px;margin-bottom:15px">
+                                    <?php else: ?>
+                                        <div aria-hidden="true" style="height:120px;border-radius:9px;background:#e7f5f2;color:#0f766e;display:grid;place-items:center;font-size:42px;margin-bottom:15px">▤</div>
+                                    <?php endif; ?>
+                                    <h2 class="panel-title"><?= h($sopFile['title']) ?></h2>
+                                    <?php if ($sopFile['description'] !== ''): ?><p class="panel-subtitle" style="white-space:pre-wrap"><?= h($sopFile['description']) ?></p><?php endif; ?>
+                                    <p class="muted" style="font-size:10px;margin:10px 0">File: <?= h($sopFile['original_name']) ?> · <?= number_format((int) $sopFile['file_size'] / 1024, 1, ',', '.') ?> KB</p>
+                                    <a class="btn btn-primary" style="align-self:flex-start" href="index.php?sop_file=<?= h($sopFile['id']) ?>">Unduh file</a>
+                                    <div class="field-label" style="margin-top:14px">Link unduhan publik</div>
+                                    <a class="form-link" href="<?= h($sopFileUrl) ?>"><?= h($sopFileUrl) ?></a>
+                                    <?php if (canManageSop($user)): ?>
+                                        <details style="margin-top:15px;border-top:1px solid var(--line);padding-top:12px">
+                                            <summary style="cursor:pointer;font-size:11px;font-weight:700">Edit arsip</summary>
+                                            <form method="post" enctype="multipart/form-data" style="margin-top:13px">
+                                                <input type="hidden" name="csrf" value="<?= $csrf ?>"><input type="hidden" name="action" value="update_sop"><input type="hidden" name="sop_id" value="<?= h($sopFile['id']) ?>">
+                                                <div class="field"><label>Nama SOP / Permit</label><input name="title" maxlength="120" required value="<?= h($sopFile['title']) ?>"></div>
+                                                <div class="field"><label>Deskripsi</label><textarea name="description" maxlength="500"><?= h($sopFile['description']) ?></textarea></div>
+                                                <div class="field"><label>Ganti file (opsional)</label><input name="sop_file" type="file" accept=".pdf,.doc,.docx,.xls,.xlsx"><span class="help">File saat ini: <?= h($sopFile['original_name']) ?>. File pengganti maksimal 4 MB.</span></div>
+                                                <div class="field"><label>Ganti thumbnail (opsional)</label><input name="sop_thumbnail" type="file" accept="image/jpeg,image/png,image/webp"><span class="help">JPG, PNG, WEBP · Maksimal 2 MB.</span></div>
+                                                <?php if ($sopFile['thumbnail_name'] !== ''): ?><label class="logo-remove"><input type="checkbox" name="remove_sop_thumbnail" value="1"> Hapus thumbnail saat ini</label><?php endif; ?>
+                                                <button class="btn btn-primary btn-small" type="submit">Simpan perubahan</button>
+                                            </form>
+                                            <form method="post" style="margin-top:10px" onsubmit="return confirm('Hapus arsip SOP ini secara permanen?')">
+                                                <input type="hidden" name="csrf" value="<?= $csrf ?>"><input type="hidden" name="action" value="delete_sop"><input type="hidden" name="sop_id" value="<?= h($sopFile['id']) ?>">
+                                                <button class="btn btn-danger btn-small" type="submit">Hapus arsip</button>
+                                            </form>
+                                        </details>
+                                    <?php endif; ?>
+                                </article>
+                            <?php endforeach; ?>
+                        </div>
+                    <?php endif; ?>
                 <?php elseif ($publicFormsRequest): ?>
                     <div class="fill-container">
                         <div class="page-heading"><div><div class="eyebrow">Pengisian terbuka</div><h1>Form checklist tersedia</h1><p>Pilih form yang ingin Anda isi. Login tidak diperlukan.</p></div></div>
@@ -2030,19 +2416,19 @@ $csrf = h($_SESSION['csrf']);
                             <div class="form-grid">
                                 <?php if (!$user || $role !== 'Respondent'): ?><div class="field"><label for="respondent_name">Nama lengkap <span style="color:#b42318">*</span></label><input type="text" id="respondent_name" name="respondent_name" required autocomplete="name" maxlength="100" placeholder="Masukkan nama lengkap"></div><?php endif; ?>
                                 <div class="field"><label for="respondent_email">Email responden <span style="color:#b42318">*</span></label><input type="email" id="respondent_email" name="respondent_email" required autocomplete="email" maxlength="254" placeholder="nama@perusahaan.com"><span class="help">Wajib diisi. Email ini akan disimpan bersama hasil checklist dan ditampilkan di dashboard.</span></div>
-                                <?php if (!$formHasSupervisorQuestion): ?><div class="field"><label for="supervisor">Kirim hasil kepada Supervisor/PJO <span style="color:#b42318">*</span></label><select id="supervisor" name="supervisor" required><option value="">Pilih Supervisor/PJO</option><?php foreach ($supervisors as $supervisor): ?><option value="<?= h($supervisor['username']) ?>"><?= h($supervisor['name']) ?></option><?php endforeach; ?></select></div><?php endif; ?>
+                                <?php if (!$formHasSupervisorQuestion): ?><div class="field"><label for="supervisor">Kirim hasil kepada Supervisor/PJO/HSE <span style="color:#b42318">*</span></label><select id="supervisor" name="supervisor" required><option value="">Pilih Supervisor/PJO/HSE</option><?php foreach ($supervisors as $supervisor): ?><option value="<?= h($supervisor['username']) ?>"><?= h($supervisor['name']) ?></option><?php endforeach; ?></select></div><?php endif; ?>
                             </div>
                             <?php foreach ($selectedForm['questions'] as $index => $question): ?>
                                 <?php $questionType = $question['type'] ?? 'yes_no'; ?>
                                 <section class="question-card" data-question data-type="<?= h($questionType) ?>">
-                                    <div class="question-title"><span class="question-number"><?= str_pad((string) ($index + 1), 2, '0', STR_PAD_LEFT) ?></span><div><h3><?= h($question['text']) ?></h3><p><?= $questionType === 'select' ? 'Pilih satu opsi jawaban.' : ($questionType === 'text' ? 'Isi jawaban teks.' : ($questionType === 'supervisor' ? 'Pilih Supervisor/PJO yang akan menerima hasil checklist untuk approval.' : ($questionType === 'verification' ? 'Pilih Ya atau Tidak. Jawaban Tidak memerlukan konfirmasi.' : 'Pilih Ya atau Tidak untuk melanjutkan.'))) ?></p></div></div>
+                                    <div class="question-title"><span class="question-number"><?= str_pad((string) ($index + 1), 2, '0', STR_PAD_LEFT) ?></span><div><h3><?= h($question['text']) ?></h3><p><?= $questionType === 'select' ? 'Pilih satu opsi jawaban.' : ($questionType === 'text' ? 'Isi jawaban teks.' : ($questionType === 'supervisor' ? 'Pilih Supervisor/PJO/HSE yang akan menerima hasil checklist untuk approval.' : ($questionType === 'verification' ? 'Pilih Ya atau Tidak. Jawaban Tidak memerlukan konfirmasi.' : 'Pilih Ya atau Tidak untuk melanjutkan.'))) ?></p></div></div>
                                     <?php if ($question['image'] !== ''): ?><img class="question-image" src="<?= h(mediaUrl($question['image'])) ?>" alt="Gambar pendukung pertanyaan <?= $index + 1 ?>"><?php endif; ?>
                                     <?php if ($questionType === 'select'): ?>
                                         <div class="field" style="margin:15px 0 0 41px"><label for="answer-<?= $index ?>">Pilih satu jawaban</label><select class="answer-select" id="answer-<?= $index ?>" name="answer[<?= $index ?>]" required><option value="">Pilih jawaban</option><?php foreach (($question['options'] ?? []) as $option): ?><option value="<?= h($option) ?>"><?= h($option) ?></option><?php endforeach; ?></select></div>
                                     <?php elseif ($questionType === 'text'): ?>
                                         <div class="field" style="margin:15px 0 0 41px"><label for="answer-<?= $index ?>">Jawaban teks <span style="color:#b42318">*</span></label><input class="answer-text" id="answer-<?= $index ?>" name="answer[<?= $index ?>]" type="text" maxlength="500" required placeholder="Contoh: tuliskan nama lengkap Anda"></div>
                                     <?php elseif ($questionType === 'supervisor'): ?>
-                                        <div class="field" style="margin:15px 0 0 41px"><label for="answer-<?= $index ?>">Supervisor/PJO tujuan approval <span style="color:#b42318">*</span></label><select class="answer-select" id="answer-<?= $index ?>" name="answer[<?= $index ?>]" required><option value="">Pilih Supervisor/PJO</option><?php foreach ($supervisors as $supervisor): ?><option value="<?= h($supervisor['username']) ?>"><?= h($supervisor['name']) ?></option><?php endforeach; ?></select></div>
+                                        <div class="field" style="margin:15px 0 0 41px"><label for="answer-<?= $index ?>">Supervisor/PJO/HSE tujuan approval <span style="color:#b42318">*</span></label><select class="answer-select" id="answer-<?= $index ?>" name="answer[<?= $index ?>]" required><option value="">Pilih Supervisor/PJO/HSE</option><?php foreach ($supervisors as $supervisor): ?><option value="<?= h($supervisor['username']) ?>"><?= h($supervisor['name']) ?></option><?php endforeach; ?></select></div>
                                     <?php elseif ($questionType === 'verification'): ?>
                                         <div class="answer-choice">
                                             <label class="choice"><input type="radio" name="answer[<?= $index ?>]" value="Ya" required> Ya</label>
@@ -2184,8 +2570,8 @@ $csrf = h($_SESSION['csrf']);
                         ?><div class="panel" style="box-shadow:none;background:#fbfcfe;margin:12px 0;padding:16px"><div class="panel-head" style="margin:0 0 13px"><div><h3 class="panel-title"><?= h($form['title']) ?></h3><div class="panel-subtitle"><?= count($form['questions']) ?> pertanyaan · Dibuat <?= h(date('d M Y', strtotime($form['createdAt']))) ?></div></div><div style="display:flex;gap:7px;flex-wrap:wrap"><a class="btn btn-light btn-small" href="index.php?page=edit-form&amp;id=<?= h($form['id']) ?>">Edit</a><a class="btn btn-light btn-small" href="index.php?page=fill&amp;form=<?= h($form['id']) ?>" target="_blank" rel="noopener">Pratinjau</a><form method="post" onsubmit="return confirm('Hapus form ini dari daftar? Riwayat checklist yang sudah dikirim tetap tersimpan.')"><input type="hidden" name="csrf" value="<?= $csrf ?>"><input type="hidden" name="action" value="delete_form"><input type="hidden" name="form_id" value="<?= h($form['id']) ?>"><button class="btn btn-danger btn-small" type="submit">Hapus</button></form></div></div><div class="qr-area"><img loading="lazy" src="index.php?qr_code=<?= h($form['id']) ?>" alt="QR code <?= h($form['title']) ?> dengan logo form di tengah"><div><div class="field-label">QR Code untuk dibagikan</div><p class="help">Pindai atau buka URL untuk mengisi form publik. Logo form disematkan di tengah QR Code. QR Code mengarah ke <?= h(DEFAULT_CCC_APP_URL) ?>. Ubah CCC_APP_URL hanya jika domain aplikasi berubah.</p><div class="form-link"><?= h($formUrl) ?></div><a class="btn btn-light btn-small" style="margin-top:10px" href="index.php?qr_code=<?= h($form['id']) ?>&amp;download=1" download="ccc-form-<?= h($form['id']) ?>.png">Download QR Code</a></div></div></div><?php endforeach; ?>
                     </div>
                 <?php elseif ($page === 'users' && $role === 'Administrator'): ?>
-                    <div class="page-heading"><div><div class="eyebrow">Access management</div><h1>Pengguna</h1><p>Kelola akun responden, Supervisor, dan PJO. Akun nonaktif tidak dapat login dan tidak muncul sebagai pilihan penerima checklist.</p></div></div>
-                            <div class="panel"><div class="panel-head"><div><h2 class="panel-title">Tambah pengguna</h2><div class="panel-subtitle">Akun Supervisor/PJO perlu alamat email aktif untuk menerima notifikasi.</div></div></div><form method="post"><input type="hidden" name="csrf" value="<?= $csrf ?>"><input type="hidden" name="action" value="create_user"><div class="form-grid"><div class="field"><label>Nama lengkap</label><input name="new_name" required maxlength="100"></div><div class="field"><label>Username</label><input name="new_username" required minlength="3" maxlength="30" pattern="[a-zA-Z0-9._-]+"></div><div class="field"><label>Email</label><input name="new_email" type="email" required></div><div class="field"><label>Role</label><select name="new_role"><option value="Supervisor">Supervisor</option><option value="PJO">PJO</option><option value="Respondent">Respondent</option></select></div><div class="field"><label>Kata sandi awal (min. 8 karakter)</label><input name="new_password" type="password" required minlength="8" autocomplete="new-password"></div></div><button class="btn btn-primary" type="submit">＋ Buat akun</button></form></div>
+                    <div class="page-heading"><div><div class="eyebrow">Access management</div><h1>Pengguna</h1><p>Kelola akun responden, Supervisor, PJO, dan HSE. Akun nonaktif tidak dapat login dan tidak muncul sebagai pilihan penerima checklist.</p></div></div>
+                            <div class="panel"><div class="panel-head"><div><h2 class="panel-title">Tambah pengguna</h2><div class="panel-subtitle">Akun Supervisor/PJO/HSE perlu alamat email aktif untuk menerima notifikasi.</div></div></div><form method="post"><input type="hidden" name="csrf" value="<?= $csrf ?>"><input type="hidden" name="action" value="create_user"><div class="form-grid"><div class="field"><label>Nama lengkap</label><input name="new_name" required maxlength="100"></div><div class="field"><label>Username</label><input name="new_username" required minlength="3" maxlength="30" pattern="[a-zA-Z0-9._-]+"></div><div class="field"><label>Email</label><input name="new_email" type="email" required></div><div class="field"><label>Role</label><select name="new_role"><option value="Supervisor">Supervisor</option><option value="PJO">PJO</option><option value="HSE">HSE</option><option value="Respondent">Respondent</option></select></div><div class="field"><label>Kata sandi awal (min. 8 karakter)</label><input name="new_password" type="password" required minlength="8" autocomplete="new-password"></div></div><button class="btn btn-primary" type="submit">＋ Buat akun</button></form></div>
                     <div class="panel"><div class="panel-head"><div><h2 class="panel-title">Daftar akun</h2><div class="panel-subtitle"><?= count($data['users']) ?> pengguna terdaftar</div></div></div><div class="table-wrap"><table><thead><tr><th>Pengguna</th><th>Username</th><th>Email</th><th>Role</th><th>Status</th><th>Aksi</th></tr></thead><tbody>
                         <?php foreach ($data['users'] as $account): ?>
                             <?php
@@ -2233,7 +2619,7 @@ $csrf = h($_SESSION['csrf']);
                                                 <input type="hidden" name="role" value="<?= h($account['role']) ?>">
                                                 <div class="field"><label>Role</label><span class="badge"><?= h($account['role']) ?></span><?php if ($accountHasPendingApprovals): ?><span class="help">Role dikunci karena masih ada approval tertunda.</span><?php endif; ?></div>
                                             <?php else: ?>
-                                                <div class="field"><label>Role</label><select name="role" required><option value="Supervisor" <?= $account['role'] === 'Supervisor' ? 'selected' : '' ?>>Supervisor</option><option value="PJO" <?= $account['role'] === 'PJO' ? 'selected' : '' ?>>PJO</option><option value="Respondent" <?= $account['role'] === 'Respondent' ? 'selected' : '' ?>>Respondent</option></select></div>
+                                                <div class="field"><label>Role</label><select name="role" required><option value="Supervisor" <?= $account['role'] === 'Supervisor' ? 'selected' : '' ?>>Supervisor</option><option value="PJO" <?= $account['role'] === 'PJO' ? 'selected' : '' ?>>PJO</option><option value="HSE" <?= $account['role'] === 'HSE' ? 'selected' : '' ?>>HSE</option><option value="Respondent" <?= $account['role'] === 'Respondent' ? 'selected' : '' ?>>Respondent</option></select></div>
                                             <?php endif; ?>
                                             <div class="field"><label>Kata sandi baru (opsional)</label><input name="password" type="password" minlength="8" autocomplete="new-password"><span class="help">Kosongkan jika tidak ingin mengganti kata sandi.</span></div>
                                             <span class="help">Username tidak dapat diubah agar riwayat checklist tetap terhubung.</span>
@@ -2288,12 +2674,12 @@ $csrf = h($_SESSION['csrf']);
                             <?php endforeach; ?>
                         </section>
                     <?php endif; ?>
-                    <div class="page-heading"><div><div class="eyebrow"><?= $role === 'Administrator' ? 'Overview · All operations' : ($role === 'PJO' ? 'Review · All checklists' : 'Review · Assigned checklists') ?></div><h1><?= $page === 'my-submissions' ? 'Riwayat checklist' : 'Dashboard' ?></h1><p><?= $role === 'Administrator' ? 'Pantau jawaban responden, status verifikasi, dan notifikasi email.' : ($role === 'PJO' ? 'Lihat seluruh riwayat checklist; verifikasi hanya tersedia jika email tujuan Supervisor sama dengan email PJO.' : 'Verifikasi checklist yang ditujukan kepada Anda.') ?></p></div><?php if ($role === 'Administrator'): ?><a class="btn btn-primary" href="index.php?page=forms">＋ Kelola form</a><?php endif; ?></div>
+                    <div class="page-heading"><div><div class="eyebrow"><?= $role === 'Administrator' ? 'Overview · All operations' : (in_array($role, ['PJO', 'HSE'], true) ? 'Review · All checklists' : 'Review · Assigned checklists') ?></div><h1><?= $page === 'my-submissions' ? 'Riwayat checklist' : 'Dashboard' ?></h1><p><?= $role === 'Administrator' ? 'Pantau jawaban responden, status verifikasi, dan notifikasi email.' : (in_array($role, ['PJO', 'HSE'], true) ? 'Lihat seluruh riwayat checklist; verifikasi hanya tersedia jika email tujuan Supervisor sama dengan email Anda.' : 'Verifikasi checklist yang ditujukan kepada Anda.') ?></p></div><?php if ($role === 'Administrator'): ?><a class="btn btn-primary" href="index.php?page=forms">＋ Kelola form</a><?php endif; ?></div>
                     <section class="cards">
                         <article class="stat-card"><div class="stat-top"><span>Total checklist</span><span class="stat-icon">▤</span></div><div class="stat-number"><?= $allCount ?></div><div class="stat-foot">Seluruh pengisian yang tercatat</div></article>
                         <article class="stat-card"><div class="stat-top"><span>Pending Verified</span><span class="stat-icon" style="background:#fff3dc;color:#a76b00">◷</span></div><div class="stat-number"><?= $pendingCount ?></div><div class="stat-foot">Perlu diverifikasi supervisor</div></article>
                         <article class="stat-card"><div class="stat-top"><span>Verified</span><span class="stat-icon" style="background:#e5f5ee;color:#17734c">✓</span></div><div class="stat-number"><?= $approvedCount ?></div><div class="stat-foot">Checklist selesai diverifikasi</div></article>
-                        <article class="stat-card"><div class="stat-top"><span><?= $role === 'Administrator' ? 'Penerima aktif' : 'Notifikasi email' ?></span><span class="stat-icon" style="background:#edf1fa;color:#4c5f9a"><?= $role === 'Administrator' ? '♙' : '✉' ?></span></div><div class="stat-number"><?= $role === 'Administrator' ? $supervisorCount : $emailFailures ?></div><div class="stat-foot"><?= $role === 'Administrator' ? 'Akun Supervisor/PJO' : 'Status email gagal / belum dikirim' ?></div></article>
+                        <article class="stat-card"><div class="stat-top"><span><?= $role === 'Administrator' ? 'Penerima aktif' : 'Notifikasi email' ?></span><span class="stat-icon" style="background:#edf1fa;color:#4c5f9a"><?= $role === 'Administrator' ? '♙' : '✉' ?></span></div><div class="stat-number"><?= $role === 'Administrator' ? $supervisorCount : $emailFailures ?></div><div class="stat-foot"><?= $role === 'Administrator' ? 'Akun Supervisor/PJO/HSE' : 'Status email gagal / belum dikirim' ?></div></article>
                     </section>
                     <section class="panel"><div class="panel-head" style="align-items:flex-start;flex-wrap:wrap"><div><h2 class="panel-title"><?= $page === 'my-submissions' ? 'Riwayat checklist' : 'Hasil pengisian terbaru' ?></h2><div class="panel-subtitle">Waktu ditampilkan menurut zona waktu WIT (Asia/Jayapura).</div></div>
                         <?php if ($page === 'my-submissions'): ?>
@@ -2514,7 +2900,7 @@ $csrf = h($_SESSION['csrf']);
                         : (isText || isSupervisor
                             ? `<input type="hidden" name="question_options[]" value=""><input type="hidden" name="verification_message[]" value=""><input type="hidden" name="followup_text[]" value=""><input type="file" name="followup_image[]" hidden>`
                             : `<input type="hidden" name="question_options[]" value=""><input type="hidden" name="verification_message[]" value=""><input type="hidden" name="followup_text[]" value=""><div class="field" style="margin-bottom:0"><label>Gambar pendukung pertanyaan lanjutan (opsional)</label><input type="file" name="followup_image[]" accept="image/jpeg,image/png,image/webp"><span class="help">JPG, PNG, WEBP · Maksimal 4 MB.</span></div><div class="followup-choice-builder"><div class="question-builder-head" style="margin-top:14px"><strong>Pertanyaan lanjutan pilihan</strong><button class="btn btn-light btn-small add-followup-choice" type="button">＋ Tambah pertanyaan pilihan</button></div><div class="followup-choice-list"></div><span class="help">Minimal satu pertanyaan pilihan wajib dibuat. Semua pertanyaan pilihan ini hanya tampil jika responden menjawab Ya.</span></div>`));
-                    block.innerHTML = `<div class="question-builder-head"><strong>Pertanyaan ${String(index + 1).padStart(2, '0')} · ${typeLabel}</strong><button class="btn btn-danger btn-small remove-question" type="button">Hapus</button></div><input type="hidden" name="question_type[]" value="${type}"><input type="hidden" name="question_original_index[]" value="${originalIndex}"><div class="field"><label>${questionLabel}</label><textarea name="question_text[]" maxlength="500" required placeholder="${questionExample}"></textarea></div>${isSupervisor ? '<span class="help">Opsi penerima diambil dari akun ber-role Supervisor atau PJO. Nama akun tetap ditampilkan pada pilihan; hasil form dan permintaan approval dikirim ke alamat email yang dipilih.</span>' : `<div class="field"><label>Pertanyaan untuk Supervisor/Verifikator</label><textarea name="verifier_question_text[${index}]" maxlength="500" required placeholder="Secara default mengikuti pertanyaan responden"></textarea><span class="help">Pertanyaan ini ditampilkan kembali kepada supervisor bersama jawaban responden untuk dijawab sebelum checklist diverifikasi.</span></div>`}<div class="field"><label>Gambar pendukung (opsional)</label><input type="file" name="question_image[]" accept="image/jpeg,image/png,image/webp"><span class="help">JPG, PNG, WEBP · Maksimal 4 MB.</span></div>${responseFields}`;
+                    block.innerHTML = `<div class="question-builder-head"><strong>Pertanyaan ${String(index + 1).padStart(2, '0')} · ${typeLabel}</strong><button class="btn btn-danger btn-small remove-question" type="button">Hapus</button></div><input type="hidden" name="question_type[]" value="${type}"><input type="hidden" name="question_original_index[]" value="${originalIndex}"><div class="field"><label>${questionLabel}</label><textarea name="question_text[]" maxlength="500" required placeholder="${questionExample}"></textarea></div>${isSupervisor ? '<span class="help">Opsi penerima diambil dari akun ber-role Supervisor, PJO, atau HSE. Nama akun tetap ditampilkan pada pilihan; hasil form dan permintaan approval dikirim ke alamat email yang dipilih.</span>' : `<div class="field"><label>Pertanyaan untuk Supervisor/Verifikator</label><textarea name="verifier_question_text[${index}]" maxlength="500" required placeholder="Secara default mengikuti pertanyaan responden"></textarea><span class="help">Pertanyaan ini ditampilkan kembali kepada supervisor bersama jawaban responden untuk dijawab sebelum checklist diverifikasi.</span></div>`}<div class="field"><label>Gambar pendukung (opsional)</label><input type="file" name="question_image[]" accept="image/jpeg,image/png,image/webp"><span class="help">JPG, PNG, WEBP · Maksimal 4 MB.</span></div>${responseFields}`;
                     block.querySelector('.remove-question').addEventListener('click', () => {
                         block.remove();
                         [...list.children].forEach((item, position) => {
