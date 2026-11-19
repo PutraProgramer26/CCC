@@ -78,6 +78,15 @@ function ensureCccSchema(PDO $connection): void
             INDEX idx_ccc_users_role (role)
         ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci"
     );
+    $userRoleColumn = $connection->query("SHOW COLUMNS FROM ccc_users LIKE 'role'")->fetch();
+    if (!$userRoleColumn) {
+        throw new RuntimeException('Kolom role pada tabel pengguna CCC tidak ditemukan.');
+    }
+    $userRoleType = strtolower((string) ($userRoleColumn['Type'] ?? ''));
+    if (!preg_match('/^varchar\((\d+)\)$/', $userRoleType, $userRoleTypeMatch)
+        || (int) $userRoleTypeMatch[1] < 20) {
+        $connection->exec('ALTER TABLE ccc_users MODIFY COLUMN role VARCHAR(20) NOT NULL');
+    }
     $userActiveColumn = $connection->query("SHOW COLUMNS FROM ccc_users LIKE 'is_active'")->fetch();
     if (!$userActiveColumn) {
         $connection->exec("ALTER TABLE ccc_users ADD COLUMN is_active TINYINT(1) NOT NULL DEFAULT 1 AFTER password_hash");
