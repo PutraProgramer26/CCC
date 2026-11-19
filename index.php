@@ -649,8 +649,11 @@ function canApproveSubmission(?array $user, array $submission): bool
     if (($user['role'] ?? '') === 'Administrator') {
         return true;
     }
-    return ($user['role'] ?? '') === 'Supervisor'
-        && ($submission['supervisor'] ?? null) === ($user['username'] ?? null);
+    if (($user['role'] ?? '') === 'Supervisor') {
+        return ($submission['supervisor'] ?? null) === ($user['username'] ?? null);
+    }
+    return ($user['role'] ?? '') === 'PJO'
+        && strcasecmp(trim((string) ($submission['supervisorEmail'] ?? '')), trim((string) ($user['email'] ?? ''))) === 0;
 }
 
 function loadData(string $file): array
@@ -1306,7 +1309,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             if (!preg_match('/^[a-z0-9._-]{3,30}$/', $username) || isset($data['users'][$username])) {
                 throw new RuntimeException('Username harus 3–30 karakter (huruf, angka, titik, garis bawah, atau tanda hubung) dan belum digunakan.');
             }
-            if ($name === '' || !filter_var($email, FILTER_VALIDATE_EMAIL) || !in_array($role, ['Supervisor', 'Respondent'], true) || strlen($password) < 8) {
+            if ($name === '' || !filter_var($email, FILTER_VALIDATE_EMAIL) || !in_array($role, ['Supervisor', 'PJO', 'Respondent'], true) || strlen($password) < 8) {
                 throw new RuntimeException('Nama, email valid, role, dan kata sandi minimal 8 karakter wajib diisi.');
             }
             $data['users'][$username] = [
@@ -1337,7 +1340,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 : (string) ($_POST['role'] ?? '');
             $allowedRoles = $account['role'] === 'Administrator'
                 ? ['Administrator']
-                : ['Supervisor', 'Respondent'];
+                : ['Supervisor', 'PJO', 'Respondent'];
             if ($name === '' || (function_exists('mb_strlen') ? mb_strlen($name, 'UTF-8') : strlen($name)) > 100
                 || !filter_var($email, FILTER_VALIDATE_EMAIL)
                 || !in_array($role, $allowedRoles, true)
@@ -1463,8 +1466,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 ? (string) ($_POST['answer'][$supervisorQuestionIndex] ?? '')
                 : (string) ($_POST['supervisor'] ?? '');
             $supervisor = $data['users'][$supervisorUsername] ?? null;
-            if (!filter_var($email, FILTER_VALIDATE_EMAIL) || !$supervisor || $supervisor['role'] !== 'Supervisor' || !($supervisor['isActive'] ?? true)) {
-                throw new RuntimeException('Periksa form, email responden, dan supervisor yang dipilih.');
+            if (!filter_var($email, FILTER_VALIDATE_EMAIL) || !$supervisor || !in_array($supervisor['role'], ['Supervisor', 'PJO'], true) || !($supervisor['isActive'] ?? true)) {
+                throw new RuntimeException('Periksa form, email responden, dan Supervisor/PJO yang dipilih.');
             }
             $answers = [];
             foreach ($form['questions'] as $index => $question) {
@@ -1481,7 +1484,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 }
                 if ($type === 'supervisor') {
                     if ($choice !== $supervisorUsername) {
-                        throw new RuntimeException('Pilih supervisor yang tersedia untuk menerima permintaan approval.');
+                        throw new RuntimeException('Pilih Supervisor/PJO yang tersedia untuk menerima permintaan approval.');
                     }
                     $choice = $supervisor['name'] . ' (' . $supervisor['email'] . ')';
                 }
@@ -1611,7 +1614,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             redirectTo('page=my-submissions');
         }
 
-        if ($action === 'approve' && $currentUser && in_array($currentUser['role'], ['Administrator', 'Supervisor'], true)) {
+        if ($action === 'approve' && $currentUser && in_array($currentUser['role'], ['Administrator', 'Supervisor', 'PJO'], true)) {
             $submissionId = (string) ($_POST['submission_id'] ?? '');
             $submissionIndex = null;
             foreach ($data['submissions'] as $index => &$submission) {
@@ -1619,7 +1622,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     continue;
                 }
                 if (!canApproveSubmission($currentUser, $submission)) {
-                    throw new RuntimeException('Hanya administrator atau supervisor terpilih yang dapat memverifikasi checklist ini.');
+                    throw new RuntimeException('Checklist ini hanya dapat diverifikasi administrator, supervisor tujuan, atau PJO dengan email yang sama dengan tujuan supervisor.');
                 }
                 if ($submission['status'] !== 'Menunggu approval') {
                     throw new RuntimeException('Checklist ini sudah diproses sebelumnya.');
@@ -1632,7 +1635,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 $submission['status'] = 'Disetujui';
                 $submission['approvedBy'] = $currentUser['name'];
                 $submission['approvedAt'] = date(DATE_ATOM);
-                $submission['approvalEmailStatus'] = $currentUser['role'] === 'Supervisor' ? 'Menunggu pengiriman' : '';
+                $submission['approvalEmailStatus'] = in_array($currentUser['role'], ['Supervisor', 'PJO'], true) ? 'Menunggu pengiriman' : '';
                 $submissionIndex = $index;
                 break;
             }
@@ -1641,7 +1644,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 throw new RuntimeException('Data checklist tidak ditemukan.');
             }
             saveData($dataFile, $data);
-            if ($currentUser['role'] === 'Supervisor') {
+            if (in_array($currentUser['role'], ['Supervisor', 'PJO'], true)) {
                 $emailError = '';
                 try {
                     require_once __DIR__ . DIRECTORY_SEPARATOR . 'send_approval_email.php';
@@ -1726,7 +1729,7 @@ if (!$user && $page === 'forms') {
 }
 $supervisors = array_filter(
     $data['users'],
-    static fn(array $item): bool => $item['role'] === 'Supervisor' && ($item['isActive'] ?? true)
+    static fn(array $item): bool => in_array($item['role'], ['Supervisor', 'PJO'], true) && ($item['isActive'] ?? true)
 );
 $administratorCount = count(array_filter(
     $data['users'],
@@ -1749,6 +1752,9 @@ $visibleSubmissions = array_values(array_filter($data['submissions'], static fun
     }
     if ($user['role'] === 'Supervisor') {
         return $submission['supervisor'] === $user['username'];
+    }
+    if ($user['role'] === 'PJO') {
+        return true;
     }
     return $submission['respondent'] === $user['name'];
 }));
@@ -2024,19 +2030,19 @@ $csrf = h($_SESSION['csrf']);
                             <div class="form-grid">
                                 <?php if (!$user || $role !== 'Respondent'): ?><div class="field"><label for="respondent_name">Nama lengkap <span style="color:#b42318">*</span></label><input type="text" id="respondent_name" name="respondent_name" required autocomplete="name" maxlength="100" placeholder="Masukkan nama lengkap"></div><?php endif; ?>
                                 <div class="field"><label for="respondent_email">Email responden <span style="color:#b42318">*</span></label><input type="email" id="respondent_email" name="respondent_email" required autocomplete="email" maxlength="254" placeholder="nama@perusahaan.com"><span class="help">Wajib diisi. Email ini akan disimpan bersama hasil checklist dan ditampilkan di dashboard.</span></div>
-                                <?php if (!$formHasSupervisorQuestion): ?><div class="field"><label for="supervisor">Kirim hasil kepada supervisor <span style="color:#b42318">*</span></label><select id="supervisor" name="supervisor" required><option value="">Pilih supervisor</option><?php foreach ($supervisors as $supervisor): ?><option value="<?= h($supervisor['username']) ?>"><?= h($supervisor['name']) ?></option><?php endforeach; ?></select></div><?php endif; ?>
+                                <?php if (!$formHasSupervisorQuestion): ?><div class="field"><label for="supervisor">Kirim hasil kepada Supervisor/PJO <span style="color:#b42318">*</span></label><select id="supervisor" name="supervisor" required><option value="">Pilih Supervisor/PJO</option><?php foreach ($supervisors as $supervisor): ?><option value="<?= h($supervisor['username']) ?>"><?= h($supervisor['name']) ?></option><?php endforeach; ?></select></div><?php endif; ?>
                             </div>
                             <?php foreach ($selectedForm['questions'] as $index => $question): ?>
                                 <?php $questionType = $question['type'] ?? 'yes_no'; ?>
                                 <section class="question-card" data-question data-type="<?= h($questionType) ?>">
-                                    <div class="question-title"><span class="question-number"><?= str_pad((string) ($index + 1), 2, '0', STR_PAD_LEFT) ?></span><div><h3><?= h($question['text']) ?></h3><p><?= $questionType === 'select' ? 'Pilih satu opsi jawaban.' : ($questionType === 'text' ? 'Isi jawaban teks.' : ($questionType === 'supervisor' ? 'Pilih supervisor yang akan menerima hasil checklist untuk approval.' : ($questionType === 'verification' ? 'Pilih Ya atau Tidak. Jawaban Tidak memerlukan konfirmasi.' : 'Pilih Ya atau Tidak untuk melanjutkan.'))) ?></p></div></div>
+                                    <div class="question-title"><span class="question-number"><?= str_pad((string) ($index + 1), 2, '0', STR_PAD_LEFT) ?></span><div><h3><?= h($question['text']) ?></h3><p><?= $questionType === 'select' ? 'Pilih satu opsi jawaban.' : ($questionType === 'text' ? 'Isi jawaban teks.' : ($questionType === 'supervisor' ? 'Pilih Supervisor/PJO yang akan menerima hasil checklist untuk approval.' : ($questionType === 'verification' ? 'Pilih Ya atau Tidak. Jawaban Tidak memerlukan konfirmasi.' : 'Pilih Ya atau Tidak untuk melanjutkan.'))) ?></p></div></div>
                                     <?php if ($question['image'] !== ''): ?><img class="question-image" src="<?= h(mediaUrl($question['image'])) ?>" alt="Gambar pendukung pertanyaan <?= $index + 1 ?>"><?php endif; ?>
                                     <?php if ($questionType === 'select'): ?>
                                         <div class="field" style="margin:15px 0 0 41px"><label for="answer-<?= $index ?>">Pilih satu jawaban</label><select class="answer-select" id="answer-<?= $index ?>" name="answer[<?= $index ?>]" required><option value="">Pilih jawaban</option><?php foreach (($question['options'] ?? []) as $option): ?><option value="<?= h($option) ?>"><?= h($option) ?></option><?php endforeach; ?></select></div>
                                     <?php elseif ($questionType === 'text'): ?>
                                         <div class="field" style="margin:15px 0 0 41px"><label for="answer-<?= $index ?>">Jawaban teks <span style="color:#b42318">*</span></label><input class="answer-text" id="answer-<?= $index ?>" name="answer[<?= $index ?>]" type="text" maxlength="500" required placeholder="Contoh: tuliskan nama lengkap Anda"></div>
                                     <?php elseif ($questionType === 'supervisor'): ?>
-                                        <div class="field" style="margin:15px 0 0 41px"><label for="answer-<?= $index ?>">Supervisor tujuan approval <span style="color:#b42318">*</span></label><select class="answer-select" id="answer-<?= $index ?>" name="answer[<?= $index ?>]" required><option value="">Pilih supervisor</option><?php foreach ($supervisors as $supervisor): ?><option value="<?= h($supervisor['username']) ?>"><?= h($supervisor['name']) ?></option><?php endforeach; ?></select></div>
+                                        <div class="field" style="margin:15px 0 0 41px"><label for="answer-<?= $index ?>">Supervisor/PJO tujuan approval <span style="color:#b42318">*</span></label><select class="answer-select" id="answer-<?= $index ?>" name="answer[<?= $index ?>]" required><option value="">Pilih Supervisor/PJO</option><?php foreach ($supervisors as $supervisor): ?><option value="<?= h($supervisor['username']) ?>"><?= h($supervisor['name']) ?></option><?php endforeach; ?></select></div>
                                     <?php elseif ($questionType === 'verification'): ?>
                                         <div class="answer-choice">
                                             <label class="choice"><input type="radio" name="answer[<?= $index ?>]" value="Ya" required> Ya</label>
@@ -2178,8 +2184,8 @@ $csrf = h($_SESSION['csrf']);
                         ?><div class="panel" style="box-shadow:none;background:#fbfcfe;margin:12px 0;padding:16px"><div class="panel-head" style="margin:0 0 13px"><div><h3 class="panel-title"><?= h($form['title']) ?></h3><div class="panel-subtitle"><?= count($form['questions']) ?> pertanyaan · Dibuat <?= h(date('d M Y', strtotime($form['createdAt']))) ?></div></div><div style="display:flex;gap:7px;flex-wrap:wrap"><a class="btn btn-light btn-small" href="index.php?page=edit-form&amp;id=<?= h($form['id']) ?>">Edit</a><a class="btn btn-light btn-small" href="index.php?page=fill&amp;form=<?= h($form['id']) ?>" target="_blank" rel="noopener">Pratinjau</a><form method="post" onsubmit="return confirm('Hapus form ini dari daftar? Riwayat checklist yang sudah dikirim tetap tersimpan.')"><input type="hidden" name="csrf" value="<?= $csrf ?>"><input type="hidden" name="action" value="delete_form"><input type="hidden" name="form_id" value="<?= h($form['id']) ?>"><button class="btn btn-danger btn-small" type="submit">Hapus</button></form></div></div><div class="qr-area"><img loading="lazy" src="index.php?qr_code=<?= h($form['id']) ?>" alt="QR code <?= h($form['title']) ?> dengan logo form di tengah"><div><div class="field-label">QR Code untuk dibagikan</div><p class="help">Pindai atau buka URL untuk mengisi form publik. Logo form disematkan di tengah QR Code. QR Code mengarah ke <?= h(DEFAULT_CCC_APP_URL) ?>. Ubah CCC_APP_URL hanya jika domain aplikasi berubah.</p><div class="form-link"><?= h($formUrl) ?></div><a class="btn btn-light btn-small" style="margin-top:10px" href="index.php?qr_code=<?= h($form['id']) ?>&amp;download=1" download="ccc-form-<?= h($form['id']) ?>.png">Download QR Code</a></div></div></div><?php endforeach; ?>
                     </div>
                 <?php elseif ($page === 'users' && $role === 'Administrator'): ?>
-                    <div class="page-heading"><div><div class="eyebrow">Access management</div><h1>Pengguna</h1><p>Kelola akun responden dan supervisor. Akun nonaktif tidak dapat login dan tidak muncul sebagai pilihan supervisor pada form.</p></div></div>
-                    <div class="panel"><div class="panel-head"><div><h2 class="panel-title">Tambah pengguna</h2><div class="panel-subtitle">Akun supervisor perlu alamat email aktif untuk menerima notifikasi.</div></div></div><form method="post"><input type="hidden" name="csrf" value="<?= $csrf ?>"><input type="hidden" name="action" value="create_user"><div class="form-grid"><div class="field"><label>Nama lengkap</label><input name="new_name" required maxlength="100"></div><div class="field"><label>Username</label><input name="new_username" required minlength="3" maxlength="30" pattern="[a-zA-Z0-9._-]+"></div><div class="field"><label>Email</label><input name="new_email" type="email" required></div><div class="field"><label>Role</label><select name="new_role"><option value="Supervisor">Supervisor</option><option value="Respondent">Respondent</option></select></div><div class="field"><label>Kata sandi awal (min. 8 karakter)</label><input name="new_password" type="password" required minlength="8" autocomplete="new-password"></div></div><button class="btn btn-primary" type="submit">＋ Buat akun</button></form></div>
+                    <div class="page-heading"><div><div class="eyebrow">Access management</div><h1>Pengguna</h1><p>Kelola akun responden, Supervisor, dan PJO. Akun nonaktif tidak dapat login dan tidak muncul sebagai pilihan penerima checklist.</p></div></div>
+                            <div class="panel"><div class="panel-head"><div><h2 class="panel-title">Tambah pengguna</h2><div class="panel-subtitle">Akun Supervisor/PJO perlu alamat email aktif untuk menerima notifikasi.</div></div></div><form method="post"><input type="hidden" name="csrf" value="<?= $csrf ?>"><input type="hidden" name="action" value="create_user"><div class="form-grid"><div class="field"><label>Nama lengkap</label><input name="new_name" required maxlength="100"></div><div class="field"><label>Username</label><input name="new_username" required minlength="3" maxlength="30" pattern="[a-zA-Z0-9._-]+"></div><div class="field"><label>Email</label><input name="new_email" type="email" required></div><div class="field"><label>Role</label><select name="new_role"><option value="Supervisor">Supervisor</option><option value="PJO">PJO</option><option value="Respondent">Respondent</option></select></div><div class="field"><label>Kata sandi awal (min. 8 karakter)</label><input name="new_password" type="password" required minlength="8" autocomplete="new-password"></div></div><button class="btn btn-primary" type="submit">＋ Buat akun</button></form></div>
                     <div class="panel"><div class="panel-head"><div><h2 class="panel-title">Daftar akun</h2><div class="panel-subtitle"><?= count($data['users']) ?> pengguna terdaftar</div></div></div><div class="table-wrap"><table><thead><tr><th>Pengguna</th><th>Username</th><th>Email</th><th>Role</th><th>Status</th><th>Aksi</th></tr></thead><tbody>
                         <?php foreach ($data['users'] as $account): ?>
                             <?php
@@ -2227,7 +2233,7 @@ $csrf = h($_SESSION['csrf']);
                                                 <input type="hidden" name="role" value="<?= h($account['role']) ?>">
                                                 <div class="field"><label>Role</label><span class="badge"><?= h($account['role']) ?></span><?php if ($accountHasPendingApprovals): ?><span class="help">Role dikunci karena masih ada approval tertunda.</span><?php endif; ?></div>
                                             <?php else: ?>
-                                                <div class="field"><label>Role</label><select name="role" required><option value="Supervisor" <?= $account['role'] === 'Supervisor' ? 'selected' : '' ?>>Supervisor</option><option value="Respondent" <?= $account['role'] === 'Respondent' ? 'selected' : '' ?>>Respondent</option></select></div>
+                                                <div class="field"><label>Role</label><select name="role" required><option value="Supervisor" <?= $account['role'] === 'Supervisor' ? 'selected' : '' ?>>Supervisor</option><option value="PJO" <?= $account['role'] === 'PJO' ? 'selected' : '' ?>>PJO</option><option value="Respondent" <?= $account['role'] === 'Respondent' ? 'selected' : '' ?>>Respondent</option></select></div>
                                             <?php endif; ?>
                                             <div class="field"><label>Kata sandi baru (opsional)</label><input name="password" type="password" minlength="8" autocomplete="new-password"><span class="help">Kosongkan jika tidak ingin mengganti kata sandi.</span></div>
                                             <span class="help">Username tidak dapat diubah agar riwayat checklist tetap terhubung.</span>
@@ -2282,12 +2288,12 @@ $csrf = h($_SESSION['csrf']);
                             <?php endforeach; ?>
                         </section>
                     <?php endif; ?>
-                    <div class="page-heading"><div><div class="eyebrow"><?= $role === 'Administrator' ? 'Overview · All operations' : 'Review · Assigned checklists' ?></div><h1><?= $page === 'my-submissions' ? 'Riwayat checklist' : 'Dashboard' ?></h1><p><?= $role === 'Administrator' ? 'Pantau jawaban responden, status verifikasi, dan notifikasi email.' : 'Verifikasi checklist yang ditujukan kepada Anda.' ?></p></div><?php if ($role === 'Administrator'): ?><a class="btn btn-primary" href="index.php?page=forms">＋ Kelola form</a><?php endif; ?></div>
+                    <div class="page-heading"><div><div class="eyebrow"><?= $role === 'Administrator' ? 'Overview · All operations' : ($role === 'PJO' ? 'Review · All checklists' : 'Review · Assigned checklists') ?></div><h1><?= $page === 'my-submissions' ? 'Riwayat checklist' : 'Dashboard' ?></h1><p><?= $role === 'Administrator' ? 'Pantau jawaban responden, status verifikasi, dan notifikasi email.' : ($role === 'PJO' ? 'Lihat seluruh riwayat checklist; verifikasi hanya tersedia jika email tujuan Supervisor sama dengan email PJO.' : 'Verifikasi checklist yang ditujukan kepada Anda.') ?></p></div><?php if ($role === 'Administrator'): ?><a class="btn btn-primary" href="index.php?page=forms">＋ Kelola form</a><?php endif; ?></div>
                     <section class="cards">
                         <article class="stat-card"><div class="stat-top"><span>Total checklist</span><span class="stat-icon">▤</span></div><div class="stat-number"><?= $allCount ?></div><div class="stat-foot">Seluruh pengisian yang tercatat</div></article>
                         <article class="stat-card"><div class="stat-top"><span>Pending Verified</span><span class="stat-icon" style="background:#fff3dc;color:#a76b00">◷</span></div><div class="stat-number"><?= $pendingCount ?></div><div class="stat-foot">Perlu diverifikasi supervisor</div></article>
                         <article class="stat-card"><div class="stat-top"><span>Verified</span><span class="stat-icon" style="background:#e5f5ee;color:#17734c">✓</span></div><div class="stat-number"><?= $approvedCount ?></div><div class="stat-foot">Checklist selesai diverifikasi</div></article>
-                        <article class="stat-card"><div class="stat-top"><span><?= $role === 'Administrator' ? 'Supervisor aktif' : 'Notifikasi email' ?></span><span class="stat-icon" style="background:#edf1fa;color:#4c5f9a"><?= $role === 'Administrator' ? '♙' : '✉' ?></span></div><div class="stat-number"><?= $role === 'Administrator' ? $supervisorCount : $emailFailures ?></div><div class="stat-foot"><?= $role === 'Administrator' ? 'Akun penerima checklist' : 'Status email gagal / belum dikirim' ?></div></article>
+                        <article class="stat-card"><div class="stat-top"><span><?= $role === 'Administrator' ? 'Penerima aktif' : 'Notifikasi email' ?></span><span class="stat-icon" style="background:#edf1fa;color:#4c5f9a"><?= $role === 'Administrator' ? '♙' : '✉' ?></span></div><div class="stat-number"><?= $role === 'Administrator' ? $supervisorCount : $emailFailures ?></div><div class="stat-foot"><?= $role === 'Administrator' ? 'Akun Supervisor/PJO' : 'Status email gagal / belum dikirim' ?></div></article>
                     </section>
                     <section class="panel"><div class="panel-head" style="align-items:flex-start;flex-wrap:wrap"><div><h2 class="panel-title"><?= $page === 'my-submissions' ? 'Riwayat checklist' : 'Hasil pengisian terbaru' ?></h2><div class="panel-subtitle">Waktu ditampilkan menurut zona waktu WIT (Asia/Jayapura).</div></div>
                         <?php if ($page === 'my-submissions'): ?>
@@ -2508,7 +2514,7 @@ $csrf = h($_SESSION['csrf']);
                         : (isText || isSupervisor
                             ? `<input type="hidden" name="question_options[]" value=""><input type="hidden" name="verification_message[]" value=""><input type="hidden" name="followup_text[]" value=""><input type="file" name="followup_image[]" hidden>`
                             : `<input type="hidden" name="question_options[]" value=""><input type="hidden" name="verification_message[]" value=""><input type="hidden" name="followup_text[]" value=""><div class="field" style="margin-bottom:0"><label>Gambar pendukung pertanyaan lanjutan (opsional)</label><input type="file" name="followup_image[]" accept="image/jpeg,image/png,image/webp"><span class="help">JPG, PNG, WEBP · Maksimal 4 MB.</span></div><div class="followup-choice-builder"><div class="question-builder-head" style="margin-top:14px"><strong>Pertanyaan lanjutan pilihan</strong><button class="btn btn-light btn-small add-followup-choice" type="button">＋ Tambah pertanyaan pilihan</button></div><div class="followup-choice-list"></div><span class="help">Minimal satu pertanyaan pilihan wajib dibuat. Semua pertanyaan pilihan ini hanya tampil jika responden menjawab Ya.</span></div>`));
-                    block.innerHTML = `<div class="question-builder-head"><strong>Pertanyaan ${String(index + 1).padStart(2, '0')} · ${typeLabel}</strong><button class="btn btn-danger btn-small remove-question" type="button">Hapus</button></div><input type="hidden" name="question_type[]" value="${type}"><input type="hidden" name="question_original_index[]" value="${originalIndex}"><div class="field"><label>${questionLabel}</label><textarea name="question_text[]" maxlength="500" required placeholder="${questionExample}"></textarea></div>${isSupervisor ? '<span class="help">Opsi supervisor diambil dari akun ber-role Supervisor. Hasil form dan permintaan approval dikirim ke alamat email yang dipilih.</span>' : `<div class="field"><label>Pertanyaan untuk Supervisor/Verifikator</label><textarea name="verifier_question_text[${index}]" maxlength="500" required placeholder="Secara default mengikuti pertanyaan responden"></textarea><span class="help">Pertanyaan ini ditampilkan kembali kepada supervisor bersama jawaban responden untuk dijawab sebelum checklist diverifikasi.</span></div>`}<div class="field"><label>Gambar pendukung (opsional)</label><input type="file" name="question_image[]" accept="image/jpeg,image/png,image/webp"><span class="help">JPG, PNG, WEBP · Maksimal 4 MB.</span></div>${responseFields}`;
+                    block.innerHTML = `<div class="question-builder-head"><strong>Pertanyaan ${String(index + 1).padStart(2, '0')} · ${typeLabel}</strong><button class="btn btn-danger btn-small remove-question" type="button">Hapus</button></div><input type="hidden" name="question_type[]" value="${type}"><input type="hidden" name="question_original_index[]" value="${originalIndex}"><div class="field"><label>${questionLabel}</label><textarea name="question_text[]" maxlength="500" required placeholder="${questionExample}"></textarea></div>${isSupervisor ? '<span class="help">Opsi penerima diambil dari akun ber-role Supervisor atau PJO. Nama akun tetap ditampilkan pada pilihan; hasil form dan permintaan approval dikirim ke alamat email yang dipilih.</span>' : `<div class="field"><label>Pertanyaan untuk Supervisor/Verifikator</label><textarea name="verifier_question_text[${index}]" maxlength="500" required placeholder="Secara default mengikuti pertanyaan responden"></textarea><span class="help">Pertanyaan ini ditampilkan kembali kepada supervisor bersama jawaban responden untuk dijawab sebelum checklist diverifikasi.</span></div>`}<div class="field"><label>Gambar pendukung (opsional)</label><input type="file" name="question_image[]" accept="image/jpeg,image/png,image/webp"><span class="help">JPG, PNG, WEBP · Maksimal 4 MB.</span></div>${responseFields}`;
                     block.querySelector('.remove-question').addEventListener('click', () => {
                         block.remove();
                         [...list.children].forEach((item, position) => {
