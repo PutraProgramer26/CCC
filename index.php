@@ -701,6 +701,7 @@ function loadData(string $file): array
                                 'role' => $role,
                                 'email' => $email,
                                 'password' => password_hash($password, PASSWORD_DEFAULT),
+                                'profileImage' => '',
                             ];
                         }
                         $data = [
@@ -1089,6 +1090,20 @@ function findUploadedImagePath(string $filename, array $directories): ?string
     return null;
 }
 
+function removeUploadedImage(string $filename, array $directories): bool
+{
+    if ($filename === '') {
+        return true;
+    }
+    $path = findUploadedImagePath($filename, $directories);
+    if ($path === null || unlink($path)) {
+        return true;
+    }
+
+    error_log('CCC uploaded image cleanup failed for ' . $filename . '.');
+    return false;
+}
+
 function cccApplicationBaseUrl(): string
 {
     $configuredUrl = getenv('CCC_APP_URL');
@@ -1398,6 +1413,32 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             throw new RuntimeException('Silakan masuk terlebih dahulu.');
         }
 
+        if ($action === 'update_profile_photo' && $currentUser) {
+            $oldProfileImage = (string) ($currentUser['profileImage'] ?? '');
+            $newProfileImage = storeImage(getSingleUploadedFile('profile_image'), $uploadDir);
+            $removeProfileImage = ($_POST['remove_profile_image'] ?? '') === '1';
+            if ($newProfileImage === '' && (!$removeProfileImage || $oldProfileImage === '')) {
+                throw new RuntimeException('Pilih foto profil JPG, PNG, atau WEBP maksimal 4 MB.');
+            }
+
+            $data['users'][$currentUser['username']]['profileImage'] = $newProfileImage !== ''
+                ? $newProfileImage
+                : '';
+            try {
+                saveData($dataFile, $data);
+            } catch (Throwable $exception) {
+                removeUploadedImage($newProfileImage, $uploadDirectories);
+                error_log('CCC profile image update failed: ' . $exception->getMessage());
+                throw new RuntimeException('Foto profil gagal disimpan.', 0, $exception);
+            }
+
+            $removedOldImage = $newProfileImage === '' || removeUploadedImage($oldProfileImage, $uploadDirectories);
+            setFlash($removedOldImage ? 'success' : 'warning', $removedOldImage
+                ? 'Foto profil berhasil diperbarui.'
+                : 'Foto profil berhasil diperbarui, tetapi foto lama tidak dapat dibersihkan.');
+            redirectTo('page=account');
+        }
+
         if ($action === 'change_password' && $currentUser) {
             $currentPassword = (string) ($_POST['current_password'] ?? '');
             $newPassword = (string) ($_POST['new_password'] ?? '');
@@ -1664,6 +1705,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 'email' => $email,
                 'password' => password_hash($password, PASSWORD_DEFAULT),
                 'isActive' => true,
+                'profileImage' => '',
             ];
             saveData($dataFile, $data);
             setFlash('success', 'Akun ' . $role . ' berhasil ditambahkan.');
@@ -1701,16 +1743,35 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 }
             }
 
+            $newProfileImage = storeImage(getSingleUploadedFile('profile_image'), $uploadDir);
+            $oldProfileImage = (string) ($account['profileImage'] ?? '');
+            $removeProfileImage = ($_POST['remove_profile_image'] ?? '') === '1';
             $account['name'] = $name;
             $account['email'] = $email;
             $account['role'] = $role;
+            $account['profileImage'] = $newProfileImage !== ''
+                ? $newProfileImage
+                : ($removeProfileImage ? '' : $oldProfileImage);
             if ($password !== '') {
                 $account['password'] = password_hash($password, PASSWORD_DEFAULT);
             }
             $data['users'][$username] = $account;
-            saveData($dataFile, $data);
-            setFlash('success', 'Akun ' . $username . ' berhasil diperbarui'
-                . ($password !== '' ? ' dan kata sandinya direset.' : '.'));
+            try {
+                saveData($dataFile, $data);
+            } catch (Throwable $exception) {
+                removeUploadedImage($newProfileImage, $uploadDirectories);
+                error_log('CCC administrator account update failed: ' . $exception->getMessage());
+                throw new RuntimeException('Perubahan akun gagal disimpan.', 0, $exception);
+            }
+
+            $profileImageChanged = $newProfileImage !== '' || ($removeProfileImage && $oldProfileImage !== '');
+            $removedOldImage = !$profileImageChanged || removeUploadedImage($oldProfileImage, $uploadDirectories);
+            $message = 'Akun ' . $username . ' berhasil diperbarui'
+                . ($password !== '' ? ' dan kata sandinya direset.' : '.');
+            if (!$removedOldImage) {
+                $message .= ' Foto profil lama tidak dapat dibersihkan.';
+            }
+            setFlash($removedOldImage ? 'success' : 'warning', $message);
             redirectTo('page=users');
         }
 
@@ -2028,8 +2089,14 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         if (in_array($action, ['create_sop', 'update_sop', 'delete_sop'], true)) {
             redirectTo('page=sop');
         }
-        if ($action === 'change_password') {
+        if ($action === 'update_profile_photo') {
             redirectTo('page=account');
+        }
+        if ($action === 'change_password') {
+            redirectTo('page=change-password');
+        }
+        if ($action === 'update_user') {
+            redirectTo('page=users');
         }
         redirectTo();
     }
@@ -2317,7 +2384,7 @@ $csrf = h($_SESSION['csrf']);
     </script>
 <?php else:
     $role = $user['role'] ?? 'Public';
-    $pageTitles = ['dashboard' => 'Dashboard', 'public-forms' => 'Form checklist', 'forms' => 'Form checklist', 'edit-form' => 'Edit form', 'users' => 'Pengguna', 'sop' => 'Arsip SOP', 'account' => 'Ganti password', 'my-submissions' => 'Riwayat pengisian', 'fill' => 'Isi checklist'];
+    $pageTitles = ['dashboard' => 'Dashboard', 'public-forms' => 'Form checklist', 'forms' => 'Form checklist', 'edit-form' => 'Edit form', 'users' => 'Pengguna', 'sop' => 'Arsip SOP', 'account' => 'Detail Akun', 'change-password' => 'Ganti password', 'my-submissions' => 'Riwayat pengisian', 'fill' => 'Isi checklist'];
     $pageTitle = $pageTitles[$page] ?? 'Dashboard';
     $navItems = [];
     if ($role !== 'Respondent') {
@@ -2331,7 +2398,7 @@ $csrf = h($_SESSION['csrf']);
         $navItems[] = ['dashboard', '▤', 'Isi checklist'];
     }
     $navItems[] = ['sop', '▣', 'Arsip SOP'];
-    $navItems[] = ['account', '⚙', 'Ganti password'];
+    $navItems[] = ['account', '♙', 'Detail Akun'];
     $navItems[] = ['my-submissions', '◷', $role === 'Respondent' ? 'Riwayat saya' : 'Riwayat checklist'];
     $pendingCount = count(array_filter($visibleSubmissions, static fn(array $submission): bool => $submission['status'] === 'Menunggu approval'));
 ?>
@@ -2343,7 +2410,7 @@ $csrf = h($_SESSION['csrf']);
             <?php foreach ($navItems as [$navPage, $icon, $label]): ?>
                 <a class="nav-link <?= ($page === $navPage || ($page === 'fill' && $navPage === 'dashboard')) ? 'active' : '' ?>" href="index.php<?= $navPage === 'dashboard' && $role === 'Respondent' ? '' : '?page=' . h($navPage) ?>"><span class="nav-icon"><?= h($icon) ?></span><span><?= h($label) ?></span></a>
             <?php endforeach; ?>
-            <div class="profile"><div class="profile-user"><div class="avatar"><?= h(strtoupper(substr($user['name'], 0, 1))) ?></div><div class="profile-text"><strong><?= h($user['name']) ?></strong><small><?= h($role) ?></small></div></div>
+            <div class="profile"><div class="profile-user"><div class="avatar"><?php if (($user['profileImage'] ?? '') !== ''): ?><img src="<?= h(mediaUrl($user['profileImage'])) ?>" alt="" style="width:36px;height:36px;object-fit:cover;border-radius:50%"><?php else: ?><?= h(strtoupper(substr($user['name'], 0, 1))) ?><?php endif; ?></div><div class="profile-text"><strong><?= h($user['name']) ?></strong><small><?= h($role) ?></small></div></div>
                 <form method="post" class="logout-form"><input type="hidden" name="csrf" value="<?= $csrf ?>"><input type="hidden" name="action" value="logout"><button title="Log out" class="btn btn-small logout-button" type="submit"><span aria-hidden="true">↗</span> Log out</button></form>
             </div>
         </aside>
@@ -2361,6 +2428,31 @@ $csrf = h($_SESSION['csrf']);
                         <p class="muted" style="margin:0">Hasil checklist Anda sudah direkam dan diteruskan ke supervisor untuk proses approval.</p>
                     </section>
                 <?php elseif ($page === 'account'): ?>
+                    <div class="page-heading"><div><div class="eyebrow">Profil pengguna</div><h1>Detail Akun</h1><p>Lihat informasi akun, unggah foto profil, atau perbarui password.</p></div></div>
+                    <section class="panel" style="max-width:760px">
+                        <div style="display:flex;align-items:center;gap:18px;margin-bottom:22px">
+                            <div style="width:92px;height:92px;flex:none;border-radius:50%;overflow:hidden;background:var(--mint);color:var(--accent);display:grid;place-items:center;font-size:34px;font-weight:800">
+                                <?php if (($user['profileImage'] ?? '') !== ''): ?><img src="<?= h(mediaUrl($user['profileImage'])) ?>" alt="Foto profil <?= h($user['name']) ?>" style="width:100%;height:100%;object-fit:cover"><?php else: ?><?= h(strtoupper(substr($user['name'], 0, 1))) ?><?php endif; ?>
+                            </div>
+                            <div><h2 class="panel-title" style="font-size:20px"><?= h($user['name']) ?></h2><span class="badge" style="margin-top:8px"><?= h($role) ?></span></div>
+                        </div>
+                        <dl style="display:grid;grid-template-columns:130px minmax(0,1fr);gap:10px 14px;margin:0 0 24px;font-size:12px">
+                            <dt class="muted">Username</dt><dd style="margin:0;overflow-wrap:anywhere"><?= h($user['username']) ?></dd>
+                            <dt class="muted">Email</dt><dd style="margin:0;overflow-wrap:anywhere"><?= h($user['email']) ?></dd>
+                            <dt class="muted">Role</dt><dd style="margin:0"><?= h($role) ?></dd>
+                        </dl>
+                        <form method="post" enctype="multipart/form-data" style="border-top:1px solid var(--line);padding-top:18px">
+                            <input type="hidden" name="csrf" value="<?= $csrf ?>"><input type="hidden" name="action" value="update_profile_photo">
+                            <div class="field"><label for="profile-image">Foto profil</label><input id="profile-image" name="profile_image" type="file" accept="image/jpeg,image/png,image/webp" <?= ($user['profileImage'] ?? '') === '' ? 'required' : '' ?>><span class="help">JPG, PNG, atau WEBP · Maksimal 4 MB.</span></div>
+                            <?php if (($user['profileImage'] ?? '') !== ''): ?><label class="logo-remove"><input type="checkbox" name="remove_profile_image" value="1"> Hapus foto profil saat ini</label><?php endif; ?>
+                            <button class="btn btn-primary btn-small" type="submit"><?= ($user['profileImage'] ?? '') !== '' ? 'Simpan foto profil' : 'Unggah foto profil' ?></button>
+                        </form>
+                        <div style="border-top:1px solid var(--line);padding-top:18px;margin-top:18px">
+                            <a class="btn btn-light" href="index.php?page=change-password">Ganti password</a>
+                            <?php if ($role === 'Administrator'): ?><p class="help" style="margin-top:12px">Untuk mereset password pengguna yang lupa, buka menu Pengguna lalu edit akun terkait.</p><?php endif; ?>
+                        </div>
+                    </section>
+                <?php elseif ($page === 'change-password'): ?>
                     <div class="page-heading"><div><div class="eyebrow">Keamanan akun</div><h1>Ganti password</h1><p>Gunakan password saat ini untuk mengatur password baru akun Anda.</p></div></div>
                     <section class="panel" style="max-width:620px">
                         <form method="post">
@@ -2369,8 +2461,8 @@ $csrf = h($_SESSION['csrf']);
                             <div class="field"><label for="new-password">Password baru</label><input id="new-password" name="new_password" type="password" autocomplete="new-password" minlength="8" required><span class="help">Minimal 8 karakter.</span></div>
                             <div class="field"><label for="confirm-password">Konfirmasi password baru</label><input id="confirm-password" name="confirm_password" type="password" autocomplete="new-password" minlength="8" required></div>
                             <button class="btn btn-primary" type="submit">Simpan password baru</button>
+                            <a class="btn btn-light" href="index.php?page=account">Kembali ke Detail Akun</a>
                         </form>
-                        <?php if ($role === 'Administrator'): ?><p class="help" style="margin-top:16px">Untuk membantu pengguna yang lupa password, Administrator dapat mengatur password baru melalui menu Pengguna.</p><?php endif; ?>
                     </section>
                 <?php elseif ($page === 'sop'): ?>
                     <div class="page-heading">
@@ -2633,7 +2725,7 @@ $csrf = h($_SESSION['csrf']);
                                 $roleIsLocked = $account['role'] === 'Administrator' || $accountHasPendingApprovals;
                             ?>
                             <tr>
-                                <td><div class="user-row"><div class="person-dot"><?= h(strtoupper(substr($account['name'], 0, 1))) ?></div><strong><?= h($account['name']) ?></strong></div></td>
+                                <td><div class="user-row"><div class="person-dot" style="overflow:hidden"><?php if (($account['profileImage'] ?? '') !== ''): ?><img src="<?= h(mediaUrl($account['profileImage'])) ?>" alt="" style="width:29px;height:29px;object-fit:cover"><?php else: ?><?= h(strtoupper(substr($account['name'], 0, 1))) ?><?php endif; ?></div><strong><?= h($account['name']) ?></strong></div></td>
                                 <td><?= h($accountUsername) ?></td>
                                 <td><?= h($account['email']) ?></td>
                                 <td><span class="badge"><?= h($account['role']) ?></span></td>
@@ -2651,12 +2743,14 @@ $csrf = h($_SESSION['csrf']);
                                             </dl>
                                             <p class="help" style="margin:10px 0 0">Kata sandi tidak ditampilkan demi keamanan.</p>
                                         </div>
-                                        <form method="post" style="min-width:240px;padding:12px;border:1px solid var(--line);border-radius:8px;margin-top:8px">
+                                        <form method="post" enctype="multipart/form-data" style="min-width:240px;padding:12px;border:1px solid var(--line);border-radius:8px;margin-top:8px">
                                             <input type="hidden" name="csrf" value="<?= $csrf ?>">
                                             <input type="hidden" name="action" value="update_user">
                                             <input type="hidden" name="username" value="<?= h($accountUsername) ?>">
                                             <div class="field"><label>Nama</label><input name="name" maxlength="100" required value="<?= h($account['name']) ?>"></div>
                                             <div class="field"><label>Email</label><input name="email" type="email" required value="<?= h($account['email']) ?>"></div>
+                                            <div class="field"><label>Foto profil</label><input name="profile_image" type="file" accept="image/jpeg,image/png,image/webp"><span class="help">Ganti foto profil dengan JPG, PNG, atau WEBP maksimal 4 MB.</span></div>
+                                            <?php if (($account['profileImage'] ?? '') !== ''): ?><label class="logo-remove"><input type="checkbox" name="remove_profile_image" value="1"> Hapus foto profil saat ini</label><?php endif; ?>
                                             <?php if ($roleIsLocked): ?>
                                                 <input type="hidden" name="role" value="<?= h($account['role']) ?>">
                                                 <div class="field"><label>Role</label><span class="badge"><?= h($account['role']) ?></span><?php if ($accountHasPendingApprovals): ?><span class="help">Role dikunci karena masih ada approval tertunda.</span><?php endif; ?></div>
