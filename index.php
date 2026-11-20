@@ -203,7 +203,7 @@ function renderVerifierForm(array $submission, string $csrf): string
         $type = (string) ($answer['type'] ?? 'yes_no');
         $options = is_array($answer['options'] ?? null) ? $answer['options'] : [];
         $verifierQuestion = (string) ($answer['verifierQuestion'] ?? $answer['question'] ?? '');
-        $html .= '<section class="question-builder" style="background:#fff;margin:12px 0">'
+        $html .= '<section class="question-builder" style="background:var(--paper);margin:12px 0">'
             . '<div class="field-label">Pertanyaan responden</div><p style="margin:5px 0 10px">' . h((string) ($answer['question'] ?? '')) . '</p>'
             . '<div class="field-label">Jawaban responden</div><p style="margin:5px 0 14px;white-space:pre-wrap;overflow-wrap:anywhere">' . h((string) ($answer['choice'] ?? '')) . '</p>';
         if (($answer['type'] ?? '') === 'verification' && ($answer['choice'] ?? '') === 'Tidak') {
@@ -702,6 +702,7 @@ function loadData(string $file): array
                                 'email' => $email,
                                 'password' => password_hash($password, PASSWORD_DEFAULT),
                                 'profileImage' => '',
+                                'theme' => 'light',
                             ];
                         }
                         $data = [
@@ -1413,6 +1414,33 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             throw new RuntimeException('Silakan masuk terlebih dahulu.');
         }
 
+        if ($action === 'set_theme' && $currentUser) {
+            $theme = (string) ($_POST['theme'] ?? '');
+            if (!in_array($theme, ['light', 'dark'], true)) {
+                throw new RuntimeException('Tema yang dipilih tidak valid.');
+            }
+
+            $data['users'][$currentUser['username']]['theme'] = $theme;
+            saveData($dataFile, $data);
+            setFlash('success', 'Tema ' . ($theme === 'dark' ? 'Dark' : 'Light') . ' berhasil diterapkan.');
+
+            $returnPage = (string) ($_POST['return_page'] ?? 'dashboard');
+            $allowedReturnPages = ['dashboard', 'public-forms', 'forms', 'edit-form', 'users', 'sop', 'account', 'change-password', 'my-submissions', 'fill'];
+            if (!in_array($returnPage, $allowedReturnPages, true)) {
+                $returnPage = 'dashboard';
+            }
+            $returnQuery = ['page' => $returnPage];
+            $returnForm = (string) ($_POST['return_form'] ?? '');
+            if ($returnPage === 'fill' && preg_match('/^[a-f0-9]{12}$/', $returnForm)) {
+                $returnQuery['form'] = $returnForm;
+            }
+            $returnId = (string) ($_POST['return_id'] ?? '');
+            if ($returnPage === 'edit-form' && preg_match('/^[a-f0-9]{12}$/', $returnId)) {
+                $returnQuery['id'] = $returnId;
+            }
+            redirectTo(http_build_query($returnQuery));
+        }
+
         if ($action === 'update_profile_photo' && $currentUser) {
             $oldProfileImage = (string) ($currentUser['profileImage'] ?? '');
             $newProfileImage = storeImage(getSingleUploadedFile('profile_image'), $uploadDir);
@@ -1706,6 +1734,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 'password' => password_hash($password, PASSWORD_DEFAULT),
                 'isActive' => true,
                 'profileImage' => '',
+                'theme' => 'light',
             ];
             saveData($dataFile, $data);
             setFlash('success', 'Akun ' . $role . ' berhasil ditambahkan.');
@@ -2258,13 +2287,14 @@ $publicFormRequest = !$user && $page === 'fill';
 $publicSopRequest = !$user && $page === 'sop';
 $publicSubmissionComplete = $page === 'submitted';
 $csrf = h($_SESSION['csrf']);
+$theme = $user && ($user['theme'] ?? 'light') === 'dark' ? 'dark' : 'light';
 ?>
 <!doctype html>
 <html lang="id">
 <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
-    <meta name="theme-color" content="#111827">
+    <meta name="theme-color" content="<?= $theme === 'dark' ? '#0f1724' : '#111827' ?>">
     <title><?= h(APP_NAME) ?><?= $user ? ' — Dashboard' : '' ?></title>
     <style>
         :root{--ink:#17212f;--muted:#6b7787;--line:#e6eaf0;--paper:#fff;--canvas:#f4f6fa;--nav:#111827;--accent:#0f766e;--accent-dark:#0b5b55;--mint:#e7f5f2;--orange:#f59e0b;--red:#b42318;--shadow:0 12px 36px rgba(20,35,55,.07)}
@@ -2296,7 +2326,9 @@ $csrf = h($_SESSION['csrf']);
         @media(max-width:760px){.sidebar{width:254px;padding:20px 18px;transform:translateX(0)}.brand{padding:4px 10px 28px}.brand-name,.nav-link span:not(.nav-icon),.nav-label,.profile-text{display:initial}.brand-name{display:block}.nav-link{justify-content:flex-start;padding:11px 12px}.nav-icon{font-size:initial}.profile{justify-content:flex-start;padding:17px 7px 0}.main{margin-left:0}.shell.sidebar-hidden .main{margin-left:0}.shell:not(.sidebar-hidden) .topbar-toggle{visibility:hidden}.shell.sidebar-hidden .topbar-toggle{visibility:visible}.topbar{padding:0 15px;z-index:5}.content{padding:24px 15px 40px}}
         .shell.public-shell::before{content:none}
         .login-aside{isolation:isolate}
-        body::before{content:"";position:fixed;inset:0;z-index:0;pointer-events:none;background-image:url("assets/watermark.svg");background-repeat:no-repeat;background-position:center;background-size:min(68vw,680px);opacity:.055}
+        body::before{content:"";position:fixed;inset:0;z-index:0;pointer-events:none;background-image:url("assets/watermark.svg");background-repeat:no-repeat;background-position:center;background-size:min(72vw,520px);opacity:.04}
+        body[data-authenticated="true"]::before{background-position:calc(50% + 127px) center}
+        @media(max-width:900px){body[data-authenticated="true"]::before{background-position:center}}
         #app-shell,.login-page{position:relative;z-index:1}
         .login-page{background:transparent}
         .login-form-side{background:rgba(255,255,255,.92)}
@@ -2326,9 +2358,39 @@ $csrf = h($_SESSION['csrf']);
         @keyframes safety-label-float{0%,100%{transform:translateY(0)}50%{transform:translateY(-6px)}}
         @media(max-width:760px){.login-aside{min-height:0;gap:12px}.safety-scene{height:178px;margin:0 auto}.safety-shield{width:92px;height:108px}.safety-orbit-outer{width:245px;height:112px}.safety-orbit-inner{width:180px;height:84px}.safety-token{width:48px;height:48px;border-radius:15px}.safety-token svg{width:27px;height:27px}.safety-token-helmet{left:13%;top:23px}.safety-token-warning{right:13%;top:30px;width:44px;height:44px}.safety-label{right:13%;bottom:14px;font-size:8px}.login-copy{margin:0 0 8px}}
         @media(prefers-reduced-motion:reduce){.safety-scene,.safety-scene::before,.safety-scene::after,.safety-scene *{animation:none!important;scroll-behavior:auto!important}.safety-shield{transform:rotateY(-8deg) rotateX(3deg)}.safety-token-helmet{transform:translateZ(28px) rotateY(10deg)}.safety-token-warning{transform:translateZ(28px) rotateY(-10deg)}}
+        body[data-theme="dark"]{color-scheme:dark;--ink:#e7edf5;--muted:#a3afbf;--line:#334155;--paper:#182333;--canvas:#0d1522;--nav:#080e19;--accent:#48b8a9;--accent-dark:#2e968a;--mint:#193a38;--shadow:0 12px 36px rgba(0,0,0,.28)}
+        body[data-theme="dark"]::before{opacity:.075;filter:brightness(1.8)}
+        body[data-theme="dark"] .topbar{background:rgba(13,21,34,.94)}
+        body[data-theme="dark"] .btn-light{background:#1b2737;color:var(--ink);border-color:var(--line)}
+        body[data-theme="dark"] .btn-danger{background:#3a2225;color:#ffb4ad}
+        body[data-theme="dark"] td{border-bottom-color:#263447}
+        body[data-theme="dark"] th{color:#a3afbf}
+        body[data-theme="dark"] .field label,body[data-theme="dark"] .field-label{color:#cbd5e1}
+        body[data-theme="dark"] .field input,body[data-theme="dark"] .field textarea,body[data-theme="dark"] .field select,body[data-theme="dark"] .followup-box textarea{background:#101a28;color:var(--ink);border-color:#3a495e}
+        body[data-theme="dark"] .question-builder,body[data-theme="dark"] .question-card,body[data-theme="dark"] .preview-response,body[data-theme="dark"] .verification-dialog{background:#182333;color:var(--ink);border-color:var(--line)}
+        body[data-theme="dark"] .question-builder{background:#141f2e}
+        body[data-theme="dark"] .choice:has(input:checked){background:#173936;color:#b8f1e7}
+        body[data-theme="dark"] .followup-box{background:#30291b;border-color:#62522c}
+        body[data-theme="dark"] .followup-box label{color:#f3dfaa}
+        body[data-theme="dark"] .demo-box{background:#202c3b;color:#c0cad8}
+        body[data-theme="dark"] .panel[style*="background:#fbfcfe"],body[data-theme="dark"] details>div[style*="background:#fbfcfe"]{background:var(--canvas)!important}
+        body[data-theme="dark"] #history-page-size{background:#101a28!important}
+        body[data-theme="dark"] .badge{background:#263447;color:#d4deea}
+        body[data-theme="dark"] .badge.pending{background:#473719;color:#f4d18a}
+        body[data-theme="dark"] .badge.approved{background:#183c30;color:#9be2bd}
+        body[data-theme="dark"] .badge.failed{background:#482729;color:#ffb4ad}
+        body[data-theme="dark"] .alert.success{background:#183c30;color:#a8e7c5}
+        body[data-theme="dark"] .alert.error{background:#482729;color:#ffc0ba}
+        body[data-theme="dark"] .alert.warning{background:#473719;color:#f4d18a}
+        .theme-switcher{display:inline-flex;align-items:center;gap:2px;padding:3px;border:1px solid var(--line);border-radius:9px;background:var(--canvas)}
+        .theme-switcher form{margin:0}
+        .theme-option{border:0;border-radius:6px;padding:5px 8px;background:transparent;color:var(--muted);font-size:10px;font-weight:750;white-space:nowrap}
+        .theme-option[aria-pressed="true"]{background:var(--paper);color:var(--ink);box-shadow:0 1px 4px rgba(20,35,55,.15)}
+        .theme-option:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+        @media(max-width:600px){.top-actions{gap:6px;flex-wrap:wrap;justify-content:flex-end}.theme-option{padding:5px 6px;font-size:9px}}
     </style>
 </head>
-<body>
+<body data-theme="<?= h($theme) ?>"<?= $user ? ' data-authenticated="true"' : '' ?>>
 <?php if (!$user && !$publicFormsRequest && !$publicFormRequest && !$publicSopRequest && !$publicSubmissionComplete): ?>
     <main class="login-page">
         <section class="login-aside">
@@ -2420,7 +2482,7 @@ $csrf = h($_SESSION['csrf']);
         </aside>
         <?php endif; ?>
         <main class="main">
-            <header class="topbar"><?php if ($user): ?><div class="topbar-left"><button type="button" class="btn btn-light sidebar-toggle topbar-toggle" aria-label="Tampilkan sidebar" title="Tampilkan / sembunyikan sidebar" aria-controls="app-sidebar" aria-expanded="true">☰</button><div class="crumb">CCC <span style="padding:0 7px;color:#aeb8c4">/</span> <b><?= h($pageTitle) ?></b></div></div><div class="top-actions"><span class="badge"><?= h($role) ?></span><span class="muted" style="font-size:11px"><?= date('d M Y') ?></span></div><?php else: ?><a class="brand" href="index.php"><div class="brand-mark">C</div><div class="brand-name">CRITICAL CONTROL<span>CHECKLIST SYSTEM</span></div></a><div style="display:flex;align-items:center;gap:12px;margin-left:auto"><a href="index.php?page=sop" style="font-size:12px;font-weight:700">Arsip SOP</a><a class="btn btn-light btn-small" href="index.php?page=login">Masuk</a></div><?php endif; ?></header>
+            <header class="topbar"><?php if ($user): ?><div class="topbar-left"><button type="button" class="btn btn-light sidebar-toggle topbar-toggle" aria-label="Tampilkan sidebar" title="Tampilkan / sembunyikan sidebar" aria-controls="app-sidebar" aria-expanded="true">☰</button><div class="crumb">CCC <span style="padding:0 7px;color:#aeb8c4">/</span> <b><?= h($pageTitle) ?></b></div></div><div class="top-actions"><div class="theme-switcher" role="group" aria-label="Pilih tema tampilan"><?php foreach (['light' => '☀ Light', 'dark' => '☾ Dark'] as $themeValue => $themeLabel): ?><form method="post"><input type="hidden" name="csrf" value="<?= $csrf ?>"><input type="hidden" name="action" value="set_theme"><input type="hidden" name="theme" value="<?= h($themeValue) ?>"><input type="hidden" name="return_page" value="<?= h($page) ?>"><input type="hidden" name="return_form" value="<?= h((string) ($_GET['form'] ?? '')) ?>"><input type="hidden" name="return_id" value="<?= h((string) ($_GET['id'] ?? '')) ?>"><button class="theme-option" type="submit" aria-pressed="<?= $theme === $themeValue ? 'true' : 'false' ?>"><?= h($themeLabel) ?></button></form><?php endforeach; ?></div><span class="badge"><?= h($role) ?></span><span class="muted" style="font-size:11px"><?= date('d M Y') ?></span></div><?php else: ?><a class="brand" href="index.php"><div class="brand-mark">C</div><div class="brand-name">CRITICAL CONTROL<span>CHECKLIST SYSTEM</span></div></a><div style="display:flex;align-items:center;gap:12px;margin-left:auto"><a href="index.php?page=sop" style="font-size:12px;font-weight:700">Arsip SOP</a><a class="btn btn-light btn-small" href="index.php?page=login">Masuk</a></div><?php endif; ?></header>
             <div class="content">
                 <?php if ($flash): ?><div class="alert <?= h($flash['type']) ?>"><?= h($flash['message']) ?></div><?php endif; ?>
 
@@ -2498,7 +2560,7 @@ $csrf = h($_SESSION['csrf']);
                                     <?php if ($sopFile['thumbnail_name'] !== ''): ?>
                                         <img src="index.php?sop_thumbnail=<?= h($sopFile['id']) ?>" alt="Thumbnail <?= h($sopFile['title']) ?>" loading="lazy" style="width:100%;height:180px;object-fit:cover;border-radius:9px;margin-bottom:15px">
                                     <?php else: ?>
-                                        <div aria-hidden="true" style="height:120px;border-radius:9px;background:#e7f5f2;color:#0f766e;display:grid;place-items:center;font-size:42px;margin-bottom:15px">▤</div>
+                                        <div aria-hidden="true" style="height:120px;border-radius:9px;background:var(--mint);color:var(--accent);display:grid;place-items:center;font-size:42px;margin-bottom:15px">▤</div>
                                     <?php endif; ?>
                                     <h2 class="panel-title"><?= h($sopFile['title']) ?></h2>
                                     <?php if ($sopFile['description'] !== ''): ?><p class="panel-subtitle" style="white-space:pre-wrap"><?= h($sopFile['description']) ?></p><?php endif; ?>

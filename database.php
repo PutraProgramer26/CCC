@@ -76,6 +76,7 @@ function ensureCccSchema(PDO $connection): void
             password_hash VARCHAR(255) NOT NULL,
             is_active TINYINT(1) NOT NULL DEFAULT 1,
             profile_image VARCHAR(40) NOT NULL DEFAULT '',
+            theme VARCHAR(10) NOT NULL DEFAULT 'light',
             INDEX idx_ccc_users_role (role)
         ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci"
     );
@@ -95,6 +96,10 @@ function ensureCccSchema(PDO $connection): void
     $userProfileImageColumn = $connection->query("SHOW COLUMNS FROM ccc_users LIKE 'profile_image'")->fetch();
     if (!$userProfileImageColumn) {
         $connection->exec("ALTER TABLE ccc_users ADD COLUMN profile_image VARCHAR(40) NOT NULL DEFAULT '' AFTER is_active");
+    }
+    $userThemeColumn = $connection->query("SHOW COLUMNS FROM ccc_users LIKE 'theme'")->fetch();
+    if (!$userThemeColumn) {
+        $connection->exec("ALTER TABLE ccc_users ADD COLUMN theme VARCHAR(10) NOT NULL DEFAULT 'light' AFTER profile_image");
     }
     $connection->exec(
         "CREATE TABLE IF NOT EXISTS ccc_forms (
@@ -179,7 +184,7 @@ function fetchCccData(PDO $connection): array
 {
     $data = ['users' => [], 'forms' => [], 'submissions' => []];
 
-    foreach ($connection->query('SELECT username, name, role, email, password_hash, is_active, profile_image FROM ccc_users') as $row) {
+    foreach ($connection->query('SELECT username, name, role, email, password_hash, is_active, profile_image, theme FROM ccc_users') as $row) {
         $data['users'][$row['username']] = [
             'username' => $row['username'],
             'name' => $row['name'],
@@ -188,6 +193,7 @@ function fetchCccData(PDO $connection): array
             'password' => $row['password_hash'],
             'isActive' => (bool) $row['is_active'],
             'profileImage' => $row['profile_image'],
+            'theme' => $row['theme'] === 'dark' ? 'dark' : 'light',
         ];
     }
 
@@ -254,9 +260,9 @@ function persistCccData(PDO $connection, array $data, array $previousData): void
 {
     $jsonFlags = JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES | JSON_THROW_ON_ERROR;
     $userStatement = $connection->prepare(
-        'INSERT INTO ccc_users (username, name, role, email, password_hash, is_active, profile_image)
-         VALUES (:username, :name, :role, :email, :password_hash, :is_active, :profile_image)
-         ON DUPLICATE KEY UPDATE name = VALUES(name), role = VALUES(role), email = VALUES(email), password_hash = VALUES(password_hash), is_active = VALUES(is_active), profile_image = VALUES(profile_image)'
+        'INSERT INTO ccc_users (username, name, role, email, password_hash, is_active, profile_image, theme)
+         VALUES (:username, :name, :role, :email, :password_hash, :is_active, :profile_image, :theme)
+         ON DUPLICATE KEY UPDATE name = VALUES(name), role = VALUES(role), email = VALUES(email), password_hash = VALUES(password_hash), is_active = VALUES(is_active), profile_image = VALUES(profile_image), theme = VALUES(theme)'
     );
     $deleteUserStatement = $connection->prepare('DELETE FROM ccc_users WHERE username = :username');
     $formStatement = $connection->prepare(
@@ -290,6 +296,7 @@ function persistCccData(PDO $connection, array $data, array $previousData): void
                 'password_hash' => $user['password'],
                 'is_active' => isset($user['isActive']) ? (int) (bool) $user['isActive'] : 1,
                 'profile_image' => $user['profileImage'] ?? '',
+                'theme' => ($user['theme'] ?? 'light') === 'dark' ? 'dark' : 'light',
             ]);
         }
 
