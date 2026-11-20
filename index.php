@@ -2296,6 +2296,10 @@ $csrf = h($_SESSION['csrf']);
         @media(max-width:760px){.sidebar{width:254px;padding:20px 18px;transform:translateX(0)}.brand{padding:4px 10px 28px}.brand-name,.nav-link span:not(.nav-icon),.nav-label,.profile-text{display:initial}.brand-name{display:block}.nav-link{justify-content:flex-start;padding:11px 12px}.nav-icon{font-size:initial}.profile{justify-content:flex-start;padding:17px 7px 0}.main{margin-left:0}.shell.sidebar-hidden .main{margin-left:0}.shell:not(.sidebar-hidden) .topbar-toggle{visibility:hidden}.shell.sidebar-hidden .topbar-toggle{visibility:visible}.topbar{padding:0 15px;z-index:5}.content{padding:24px 15px 40px}}
         .shell.public-shell::before{content:none}
         .login-aside{isolation:isolate}
+        body::before{content:"";position:fixed;inset:0;z-index:0;pointer-events:none;background-image:url("assets/watermark.svg");background-repeat:no-repeat;background-position:center;background-size:min(68vw,680px);opacity:.055}
+        #app-shell,.login-page{position:relative;z-index:1}
+        .login-page{background:transparent}
+        .login-form-side{background:rgba(255,255,255,.92)}
         .safety-scene{position:relative;width:min(460px,100%);height:260px;margin:5px auto 0;display:grid;place-items:center;perspective:900px;isolation:isolate}
         .safety-scene::before{content:"";position:absolute;inset:8% 12%;border-radius:50%;background:radial-gradient(ellipse,rgba(95,234,205,.2),rgba(95,234,205,0) 68%);filter:blur(8px)}
         .safety-scene::after{content:"";position:absolute;left:13%;right:13%;bottom:18px;height:1px;background:linear-gradient(90deg,transparent,rgba(157,243,224,.45),transparent)}
