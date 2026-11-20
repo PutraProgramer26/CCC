@@ -1398,6 +1398,31 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             throw new RuntimeException('Silakan masuk terlebih dahulu.');
         }
 
+        if ($action === 'change_password' && $currentUser) {
+            $currentPassword = (string) ($_POST['current_password'] ?? '');
+            $newPassword = (string) ($_POST['new_password'] ?? '');
+            $confirmPassword = (string) ($_POST['confirm_password'] ?? '');
+            if (!password_verify($currentPassword, $currentUser['password'])) {
+                throw new RuntimeException('Kata sandi saat ini tidak sesuai.');
+            }
+            if (strlen($newPassword) < 8) {
+                throw new RuntimeException('Kata sandi baru harus minimal 8 karakter.');
+            }
+            if (!hash_equals($newPassword, $confirmPassword)) {
+                throw new RuntimeException('Konfirmasi kata sandi baru tidak sama.');
+            }
+            if (password_verify($newPassword, $currentUser['password'])) {
+                throw new RuntimeException('Kata sandi baru harus berbeda dari kata sandi saat ini.');
+            }
+
+            $data['users'][$currentUser['username']]['password'] = password_hash($newPassword, PASSWORD_DEFAULT);
+            saveData($dataFile, $data);
+            session_regenerate_id(true);
+            $_SESSION['csrf'] = bin2hex(random_bytes(32));
+            setFlash('success', 'Kata sandi berhasil diganti.');
+            redirectTo('page=account');
+        }
+
         if ($action === 'create_sop' && canManageSop($currentUser)) {
             $title = trim((string) ($_POST['title'] ?? ''));
             $description = trim((string) ($_POST['description'] ?? ''));
@@ -1684,7 +1709,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             }
             $data['users'][$username] = $account;
             saveData($dataFile, $data);
-            setFlash('success', 'Akun ' . $username . ' berhasil diperbarui.');
+            setFlash('success', 'Akun ' . $username . ' berhasil diperbarui'
+                . ($password !== '' ? ' dan kata sandinya direset.' : '.'));
             redirectTo('page=users');
         }
 
@@ -2002,6 +2028,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         if (in_array($action, ['create_sop', 'update_sop', 'delete_sop'], true)) {
             redirectTo('page=sop');
         }
+        if ($action === 'change_password') {
+            redirectTo('page=account');
+        }
         redirectTo();
     }
 }
@@ -2288,7 +2317,7 @@ $csrf = h($_SESSION['csrf']);
     </script>
 <?php else:
     $role = $user['role'] ?? 'Public';
-    $pageTitles = ['dashboard' => 'Dashboard', 'public-forms' => 'Form checklist', 'forms' => 'Form checklist', 'edit-form' => 'Edit form', 'users' => 'Pengguna', 'sop' => 'Arsip SOP', 'my-submissions' => 'Riwayat pengisian', 'fill' => 'Isi checklist'];
+    $pageTitles = ['dashboard' => 'Dashboard', 'public-forms' => 'Form checklist', 'forms' => 'Form checklist', 'edit-form' => 'Edit form', 'users' => 'Pengguna', 'sop' => 'Arsip SOP', 'account' => 'Ganti password', 'my-submissions' => 'Riwayat pengisian', 'fill' => 'Isi checklist'];
     $pageTitle = $pageTitles[$page] ?? 'Dashboard';
     $navItems = [];
     if ($role !== 'Respondent') {
@@ -2302,6 +2331,7 @@ $csrf = h($_SESSION['csrf']);
         $navItems[] = ['dashboard', '▤', 'Isi checklist'];
     }
     $navItems[] = ['sop', '▣', 'Arsip SOP'];
+    $navItems[] = ['account', '⚙', 'Ganti password'];
     $navItems[] = ['my-submissions', '◷', $role === 'Respondent' ? 'Riwayat saya' : 'Riwayat checklist'];
     $pendingCount = count(array_filter($visibleSubmissions, static fn(array $submission): bool => $submission['status'] === 'Menunggu approval'));
 ?>
@@ -2329,6 +2359,18 @@ $csrf = h($_SESSION['csrf']);
                         <div class="eyebrow">Checklist terkirim</div>
                         <h1 style="font-size:24px;margin:8px 0">Terima kasih</h1>
                         <p class="muted" style="margin:0">Hasil checklist Anda sudah direkam dan diteruskan ke supervisor untuk proses approval.</p>
+                    </section>
+                <?php elseif ($page === 'account'): ?>
+                    <div class="page-heading"><div><div class="eyebrow">Keamanan akun</div><h1>Ganti password</h1><p>Gunakan password saat ini untuk mengatur password baru akun Anda.</p></div></div>
+                    <section class="panel" style="max-width:620px">
+                        <form method="post">
+                            <input type="hidden" name="csrf" value="<?= $csrf ?>"><input type="hidden" name="action" value="change_password">
+                            <div class="field"><label for="current-password">Password saat ini</label><input id="current-password" name="current_password" type="password" autocomplete="current-password" required></div>
+                            <div class="field"><label for="new-password">Password baru</label><input id="new-password" name="new_password" type="password" autocomplete="new-password" minlength="8" required><span class="help">Minimal 8 karakter.</span></div>
+                            <div class="field"><label for="confirm-password">Konfirmasi password baru</label><input id="confirm-password" name="confirm_password" type="password" autocomplete="new-password" minlength="8" required></div>
+                            <button class="btn btn-primary" type="submit">Simpan password baru</button>
+                        </form>
+                        <?php if ($role === 'Administrator'): ?><p class="help" style="margin-top:16px">Untuk membantu pengguna yang lupa password, Administrator dapat mengatur password baru melalui menu Pengguna.</p><?php endif; ?>
                     </section>
                 <?php elseif ($page === 'sop'): ?>
                     <div class="page-heading">
@@ -2621,7 +2663,7 @@ $csrf = h($_SESSION['csrf']);
                                             <?php else: ?>
                                                 <div class="field"><label>Role</label><select name="role" required><option value="Supervisor" <?= $account['role'] === 'Supervisor' ? 'selected' : '' ?>>Supervisor</option><option value="PJO" <?= $account['role'] === 'PJO' ? 'selected' : '' ?>>PJO</option><option value="HSE" <?= $account['role'] === 'HSE' ? 'selected' : '' ?>>HSE</option><option value="Respondent" <?= $account['role'] === 'Respondent' ? 'selected' : '' ?>>Respondent</option></select></div>
                                             <?php endif; ?>
-                                            <div class="field"><label>Kata sandi baru (opsional)</label><input name="password" type="password" minlength="8" autocomplete="new-password"><span class="help">Kosongkan jika tidak ingin mengganti kata sandi.</span></div>
+                                            <div class="field"><label>Reset kata sandi (opsional)</label><input name="password" type="password" minlength="8" autocomplete="new-password"><span class="help">Isi kata sandi baru minimal 8 karakter untuk mereset akun ini tanpa kata sandi lama. Kosongkan jika tidak ada perubahan.</span></div>
                                             <span class="help">Username tidak dapat diubah agar riwayat checklist tetap terhubung.</span>
                                             <button class="btn btn-primary btn-small" type="submit">Simpan perubahan</button>
                                         </form>
