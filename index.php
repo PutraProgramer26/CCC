@@ -652,8 +652,8 @@ function canApproveSubmission(?array $user, array $submission): bool
     if (($user['role'] ?? '') === 'Administrator') {
         return true;
     }
-    if (($user['role'] ?? '') === 'Supervisor') {
-        return ($submission['supervisor'] ?? null) === ($user['username'] ?? null);
+    if (($submission['supervisor'] ?? null) === ($user['username'] ?? null)) {
+        return true;
     }
     return in_array($user['role'] ?? '', ['PJO', 'HSE'], true)
         && strcasecmp(trim((string) ($submission['supervisorEmail'] ?? '')), trim((string) ($user['email'] ?? ''))) === 0;
@@ -1764,14 +1764,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 throw new RuntimeException('Nama, email, role, atau kata sandi baru tidak valid. Kata sandi harus minimal 8 karakter.');
             }
 
-            if ($role !== $account['role']) {
-                foreach ($data['submissions'] as $submission) {
-                    if ($submission['supervisor'] === $username && $submission['status'] === 'Menunggu approval') {
-                        throw new RuntimeException('Role tidak dapat diubah karena akun ini masih memiliki checklist yang menunggu verifikasi.');
-                    }
-                }
-            }
-
             $newProfileImage = storeImage(getSingleUploadedFile('profile_image'), $uploadDir);
             $oldProfileImage = (string) ($account['profileImage'] ?? '');
             $removeProfileImage = ($_POST['remove_profile_image'] ?? '') === '1';
@@ -2050,19 +2042,22 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             redirectTo('page=my-submissions');
         }
 
-        if ($action === 'approve' && $currentUser && in_array($currentUser['role'], ['Administrator', 'Supervisor', 'PJO', 'HSE'], true)) {
+        if ($action === 'approve' && $currentUser) {
             $submissionId = (string) ($_POST['submission_id'] ?? '');
             $submissionIndex = null;
+            $sendApprovalEmail = false;
             foreach ($data['submissions'] as $index => &$submission) {
                 if ($submission['id'] !== $submissionId) {
                     continue;
                 }
                 if (!canApproveSubmission($currentUser, $submission)) {
-                    throw new RuntimeException('Checklist ini hanya dapat diverifikasi administrator, supervisor tujuan, atau PJO/HSE dengan email yang sama dengan tujuan supervisor.');
+                    throw new RuntimeException('Checklist ini hanya dapat diverifikasi administrator, akun yang ditugaskan sebagai supervisor, atau PJO/HSE dengan email yang sama dengan tujuan supervisor.');
                 }
                 if ($submission['status'] !== 'Menunggu approval') {
                     throw new RuntimeException('Checklist ini sudah diproses sebelumnya.');
                 }
+                $sendApprovalEmail = in_array($currentUser['role'], ['Supervisor', 'PJO', 'HSE'], true)
+                    || $submission['supervisor'] === $currentUser['username'];
                 $submission['verifierAnswers'] = buildVerifierAnswers(
                     $submission['answers'],
                     $_POST,
@@ -2071,7 +2066,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 $submission['status'] = 'Disetujui';
                 $submission['approvedBy'] = $currentUser['name'];
                 $submission['approvedAt'] = date(DATE_ATOM);
-                $submission['approvalEmailStatus'] = in_array($currentUser['role'], ['Supervisor', 'PJO', 'HSE'], true) ? 'Menunggu pengiriman' : '';
+                $submission['approvalEmailStatus'] = $sendApprovalEmail ? 'Menunggu pengiriman' : '';
                 $submissionIndex = $index;
                 break;
             }
@@ -2080,7 +2075,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 throw new RuntimeException('Data checklist tidak ditemukan.');
             }
             saveData($dataFile, $data);
-            if (in_array($currentUser['role'], ['Supervisor', 'PJO', 'HSE'], true)) {
+            if ($sendApprovalEmail) {
                 $emailError = '';
                 try {
                     require_once __DIR__ . DIRECTORY_SEPARATOR . 'send_approval_email.php';
@@ -2101,7 +2096,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             } else {
                 setFlash('success', 'Checklist berhasil diverifikasi.');
             }
-            redirectTo('page=dashboard');
+            redirectTo($currentUser['role'] === 'Respondent' ? 'page=my-submissions' : 'page=dashboard');
         }
 
         throw new RuntimeException('Aksi tidak tersedia atau Anda tidak memiliki izin.');
@@ -2205,7 +2200,8 @@ $visibleSubmissions = array_values(array_filter($data['submissions'], static fun
     if (in_array($user['role'], ['PJO', 'HSE'], true)) {
         return true;
     }
-    return $submission['respondent'] === $user['name'];
+    return $submission['respondent'] === $user['name']
+        || ($submission['supervisor'] === $user['username'] && $submission['status'] === 'Menunggu approval');
 }));
 usort($visibleSubmissions, static fn(array $a, array $b): int => strcmp($b['submittedAt'], $a['submittedAt']));
 if (array_key_exists('export', $_GET)) {
@@ -2788,7 +2784,7 @@ $theme = $user && ($user['theme'] ?? 'light') === 'dark' ? 'dark' : 'light';
                                     && !$isLastAdministrator
                                     && !$cannotDeleteLastActiveAdministrator
                                     && !$accountHasPendingApprovals;
-                                $roleIsLocked = $account['role'] === 'Administrator' || $accountHasPendingApprovals;
+                                $roleIsLocked = $account['role'] === 'Administrator';
                             ?>
                             <tr>
                                 <td><div class="user-row"><div class="person-dot" style="overflow:hidden"><?php if (($account['profileImage'] ?? '') !== ''): ?><img src="<?= h(mediaUrl($account['profileImage'])) ?>" alt="" style="width:29px;height:29px;object-fit:cover"><?php else: ?><?= h(strtoupper(substr($account['name'], 0, 1))) ?><?php endif; ?></div><strong><?= h($account['name']) ?></strong></div></td>
@@ -2819,9 +2815,9 @@ $theme = $user && ($user['theme'] ?? 'light') === 'dark' ? 'dark' : 'light';
                                             <?php if (($account['profileImage'] ?? '') !== ''): ?><label class="logo-remove"><input type="checkbox" name="remove_profile_image" value="1"> Hapus foto profil saat ini</label><?php endif; ?>
                                             <?php if ($roleIsLocked): ?>
                                                 <input type="hidden" name="role" value="<?= h($account['role']) ?>">
-                                                <div class="field"><label>Role</label><span class="badge"><?= h($account['role']) ?></span><?php if ($accountHasPendingApprovals): ?><span class="help">Role dikunci karena masih ada approval tertunda.</span><?php endif; ?></div>
+                                                <div class="field"><label>Role</label><span class="badge"><?= h($account['role']) ?></span><span class="help">Role Administrator tidak dapat diubah.</span></div>
                                             <?php else: ?>
-                                                <div class="field"><label>Role</label><select name="role" required><option value="Supervisor" <?= $account['role'] === 'Supervisor' ? 'selected' : '' ?>>Supervisor</option><option value="PJO" <?= $account['role'] === 'PJO' ? 'selected' : '' ?>>PJO</option><option value="HSE" <?= $account['role'] === 'HSE' ? 'selected' : '' ?>>HSE</option><option value="Respondent" <?= $account['role'] === 'Respondent' ? 'selected' : '' ?>>Respondent</option></select></div>
+                                                <div class="field"><label>Role</label><select name="role" required><option value="Supervisor" <?= $account['role'] === 'Supervisor' ? 'selected' : '' ?>>Supervisor</option><option value="PJO" <?= $account['role'] === 'PJO' ? 'selected' : '' ?>>PJO</option><option value="HSE" <?= $account['role'] === 'HSE' ? 'selected' : '' ?>>HSE</option><option value="Respondent" <?= $account['role'] === 'Respondent' ? 'selected' : '' ?>>Respondent</option></select><?php if ($accountHasPendingApprovals): ?><span class="help">Role dapat diubah; checklist yang sudah ditugaskan tetap dapat diverifikasi oleh akun ini.</span><?php endif; ?></div>
                                             <?php endif; ?>
                                             <div class="field"><label>Reset kata sandi (opsional)</label><input name="password" type="password" minlength="8" autocomplete="new-password"><span class="help">Isi kata sandi baru minimal 8 karakter untuk mereset akun ini tanpa kata sandi lama. Kosongkan jika tidak ada perubahan.</span></div>
                                             <span class="help">Username tidak dapat diubah agar riwayat checklist tetap terhubung.</span>
