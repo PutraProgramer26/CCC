@@ -771,13 +771,18 @@ function redirectTo(string $query = ''): never
     exit;
 }
 
-function historyPageUrl(int $pageNumber, int $pageSize): string
+function historyPageUrl(int $pageNumber, int $pageSize, string $status = 'all'): string
 {
-    return 'index.php?' . http_build_query([
+    $query = [
         'page' => 'my-submissions',
         'per_page' => $pageSize,
         'history_page' => $pageNumber,
-    ]);
+    ];
+    if ($status !== 'all') {
+        $query['status'] = $status;
+    }
+
+    return 'index.php?' . http_build_query($query);
 }
 
 function setFlash(string $type, string $message): void
@@ -2234,26 +2239,36 @@ if (array_key_exists('export', $_GET)) {
     exit;
 }
 $historyPageSizes = [10, 50, 75, 100, 150, 200];
+$historyStatusFilter = (string) ($_GET['status'] ?? 'all');
+if (!in_array($historyStatusFilter, ['all', 'pending', 'verified'], true)) {
+    $historyStatusFilter = 'all';
+}
+$historySubmissions = $historyStatusFilter === 'all'
+    ? $visibleSubmissions
+    : array_values(array_filter(
+        $visibleSubmissions,
+        static fn(array $submission): bool => $submission['status'] === ($historyStatusFilter === 'pending' ? 'Menunggu approval' : 'Disetujui')
+    ));
 $requestedPageSize = filter_var($_GET['per_page'] ?? 10, FILTER_VALIDATE_INT);
 $historyPageSize = in_array($requestedPageSize, $historyPageSizes, true) ? $requestedPageSize : 10;
 $requestedSubmissionId = (string) ($_GET['submission_id'] ?? '');
 $requestedHistoryPage = $_GET['history_page'] ?? 1;
 if (preg_match('/^[a-f0-9]{16}$/', $requestedSubmissionId)) {
-    foreach ($visibleSubmissions as $index => $submission) {
+    foreach ($historySubmissions as $index => $submission) {
         if ($submission['id'] === $requestedSubmissionId) {
             $requestedHistoryPage = (int) floor($index / $historyPageSize) + 1;
             break;
         }
     }
 }
-$historyTotal = count($visibleSubmissions);
+$historyTotal = count($historySubmissions);
 $historyPageCount = max(1, (int) ceil($historyTotal / $historyPageSize));
 $requestedHistoryPage = filter_var($requestedHistoryPage, FILTER_VALIDATE_INT);
 $historyPage = is_int($requestedHistoryPage) && $requestedHistoryPage > 0
     ? min($requestedHistoryPage, $historyPageCount)
     : 1;
 $historyOffset = ($historyPage - 1) * $historyPageSize;
-$historyPageSubmissions = array_slice($visibleSubmissions, $historyOffset, $historyPageSize);
+$historyPageSubmissions = array_slice($historySubmissions, $historyOffset, $historyPageSize);
 $historyFirstItem = $historyTotal > 0 ? $historyOffset + 1 : 0;
 $historyLastItem = min($historyOffset + $historyPageSize, $historyTotal);
 $selectedForm = null;
@@ -2378,6 +2393,9 @@ $theme = $user && ($user['theme'] ?? 'light') === 'dark' ? 'dark' : 'light';
         body[data-theme="dark"] .alert.success{background:#183c30;color:#a8e7c5}
         body[data-theme="dark"] .alert.error{background:#482729;color:#ffc0ba}
         body[data-theme="dark"] .alert.warning{background:#473719;color:#f4d18a}
+        .stat-card-link{display:block;color:inherit;text-decoration:none;transition:transform .15s,box-shadow .15s}
+        .stat-card-link:hover{transform:translateY(-2px);box-shadow:var(--shadow)}
+        .stat-card-link:focus-visible{outline:2px solid var(--accent);outline-offset:3px}
         .theme-switcher{display:inline-flex;align-items:center;gap:2px;padding:3px;border:1px solid var(--line);border-radius:9px;background:var(--canvas)}
         .theme-switcher form{margin:0}
         .theme-option{border:0;border-radius:6px;padding:5px 8px;background:transparent;color:var(--muted);font-size:10px;font-weight:750;white-space:nowrap}
@@ -2671,6 +2689,7 @@ $theme = $user && ($user['theme'] ?? 'light') === 'dark' ? 'dark' : 'light';
                             <div style="display:flex;align-items:center;justify-content:flex-end;gap:12px;flex-wrap:wrap">
                                 <form method="get" style="display:flex;align-items:center;gap:7px;flex-wrap:wrap">
                                     <input type="hidden" name="page" value="my-submissions">
+                                    <input type="hidden" name="status" value="<?= h($historyStatusFilter) ?>">
                                     <label for="history-page-size" style="font-size:11px;font-weight:600;color:var(--muted)">Tampilkan</label>
                                     <select id="history-page-size" name="per_page" style="border:1px solid var(--line);border-radius:8px;padding:7px 9px;background:#fff;color:var(--ink);font-size:11px">
                                         <?php foreach ($historyPageSizes as $pageSize): ?>
@@ -2681,9 +2700,9 @@ $theme = $user && ($user['theme'] ?? 'light') === 'dark' ? 'dark' : 'light';
                                 </form>
                                 <div style="display:flex;align-items:center;gap:8px;font-size:11px;white-space:nowrap">
                                     <span class="muted"><?= $historyFirstItem ?>–<?= $historyLastItem ?> dari <?= $historyTotal ?></span>
-                                    <?php if ($historyPage > 1): ?><a class="btn btn-light btn-small" href="<?= h(historyPageUrl($historyPage - 1, $historyPageSize)) ?>" aria-label="Halaman sebelumnya">←</a><?php endif; ?>
+                                    <?php if ($historyPage > 1): ?><a class="btn btn-light btn-small" href="<?= h(historyPageUrl($historyPage - 1, $historyPageSize, $historyStatusFilter)) ?>" aria-label="Halaman sebelumnya">←</a><?php endif; ?>
                                     <span>Hal. <?= $historyPage ?>/<?= $historyPageCount ?></span>
-                                    <?php if ($historyPage < $historyPageCount): ?><a class="btn btn-light btn-small" href="<?= h(historyPageUrl($historyPage + 1, $historyPageSize)) ?>" aria-label="Halaman berikutnya">→</a><?php endif; ?>
+                                    <?php if ($historyPage < $historyPageCount): ?><a class="btn btn-light btn-small" href="<?= h(historyPageUrl($historyPage + 1, $historyPageSize, $historyStatusFilter)) ?>" aria-label="Halaman berikutnya">→</a><?php endif; ?>
                                 </div>
                             </div>
                         </div>
@@ -2874,9 +2893,9 @@ $theme = $user && ($user['theme'] ?? 'light') === 'dark' ? 'dark' : 'light';
                     <?php endif; ?>
                     <div class="page-heading"><div><div class="eyebrow"><?= $role === 'Administrator' ? 'Overview · All operations' : (in_array($role, ['PJO', 'HSE'], true) ? 'Review · All checklists' : 'Review · Assigned checklists') ?></div><h1><?= $page === 'my-submissions' ? 'Riwayat checklist' : 'Dashboard' ?></h1><p><?= $role === 'Administrator' ? 'Pantau jawaban responden, status verifikasi, dan notifikasi email.' : (in_array($role, ['PJO', 'HSE'], true) ? 'Lihat seluruh riwayat checklist; verifikasi hanya tersedia jika email tujuan Supervisor sama dengan email Anda.' : 'Verifikasi checklist yang ditujukan kepada Anda.') ?></p></div><?php if ($role === 'Administrator'): ?><a class="btn btn-primary" href="index.php?page=forms">＋ Kelola form</a><?php endif; ?></div>
                     <section class="cards">
-                        <article class="stat-card"><div class="stat-top"><span>Total checklist</span><span class="stat-icon">▤</span></div><div class="stat-number"><?= $allCount ?></div><div class="stat-foot">Seluruh pengisian yang tercatat</div></article>
-                        <article class="stat-card"><div class="stat-top"><span>Pending Verified</span><span class="stat-icon" style="background:#fff3dc;color:#a76b00">◷</span></div><div class="stat-number"><?= $pendingCount ?></div><div class="stat-foot">Perlu diverifikasi supervisor</div></article>
-                        <article class="stat-card"><div class="stat-top"><span>Verified</span><span class="stat-icon" style="background:#e5f5ee;color:#17734c">✓</span></div><div class="stat-number"><?= $approvedCount ?></div><div class="stat-foot">Checklist selesai diverifikasi</div></article>
+                        <a class="stat-card stat-card-link" href="index.php?page=my-submissions&amp;status=all" aria-label="Lihat semua checklist, <?= $allCount ?> total"><div class="stat-top"><span>Total checklist</span><span class="stat-icon">▤</span></div><div class="stat-number"><?= $allCount ?></div><div class="stat-foot">Seluruh pengisian yang tercatat</div></a>
+                        <a class="stat-card stat-card-link" href="index.php?page=my-submissions&amp;status=pending" aria-label="Lihat semua checklist Pending Verified, <?= $pendingCount ?> total"><div class="stat-top"><span>Pending Verified</span><span class="stat-icon" style="background:#fff3dc;color:#a76b00">◷</span></div><div class="stat-number"><?= $pendingCount ?></div><div class="stat-foot">Perlu diverifikasi supervisor</div></a>
+                        <a class="stat-card stat-card-link" href="index.php?page=my-submissions&amp;status=verified" aria-label="Lihat semua checklist Verified, <?= $approvedCount ?> total"><div class="stat-top"><span>Verified</span><span class="stat-icon" style="background:#e5f5ee;color:#17734c">✓</span></div><div class="stat-number"><?= $approvedCount ?></div><div class="stat-foot">Checklist selesai diverifikasi</div></a>
                         <article class="stat-card"><div class="stat-top"><span><?= $role === 'Administrator' ? 'Penerima aktif' : 'Notifikasi email' ?></span><span class="stat-icon" style="background:#edf1fa;color:#4c5f9a"><?= $role === 'Administrator' ? '♙' : '✉' ?></span></div><div class="stat-number"><?= $role === 'Administrator' ? $supervisorCount : $emailFailures ?></div><div class="stat-foot"><?= $role === 'Administrator' ? 'Akun Supervisor/PJO/HSE' : 'Status email gagal / belum dikirim' ?></div></article>
                     </section>
                     <section class="panel"><div class="panel-head" style="align-items:flex-start;flex-wrap:wrap"><div><h2 class="panel-title"><?= $page === 'my-submissions' ? 'Riwayat checklist' : 'Hasil pengisian terbaru' ?></h2><div class="panel-subtitle">Waktu ditampilkan menurut zona waktu WIT (Asia/Jayapura).</div></div>
@@ -2890,6 +2909,7 @@ $theme = $user && ($user['theme'] ?? 'light') === 'dark' ? 'dark' : 'light';
                                 <?php endif; ?>
                                 <form method="get" style="display:flex;align-items:center;gap:7px;flex-wrap:wrap">
                                     <input type="hidden" name="page" value="my-submissions">
+                                    <input type="hidden" name="status" value="<?= h($historyStatusFilter) ?>">
                                     <label for="history-page-size" style="font-size:11px;font-weight:600;color:var(--muted)">Tampilkan</label>
                                     <select id="history-page-size" name="per_page" style="border:1px solid var(--line);border-radius:8px;padding:7px 9px;background:#fff;color:var(--ink);font-size:11px">
                                         <?php foreach ($historyPageSizes as $pageSize): ?>
@@ -2900,16 +2920,16 @@ $theme = $user && ($user['theme'] ?? 'light') === 'dark' ? 'dark' : 'light';
                                 </form>
                                 <div style="display:flex;align-items:center;gap:8px;font-size:11px;white-space:nowrap">
                                     <span class="muted"><?= $historyFirstItem ?>–<?= $historyLastItem ?> dari <?= $historyTotal ?></span>
-                                    <?php if ($historyPage > 1): ?><a class="btn btn-light btn-small" href="<?= h(historyPageUrl($historyPage - 1, $historyPageSize)) ?>" aria-label="Halaman sebelumnya">←</a><?php endif; ?>
+                                    <?php if ($historyPage > 1): ?><a class="btn btn-light btn-small" href="<?= h(historyPageUrl($historyPage - 1, $historyPageSize, $historyStatusFilter)) ?>" aria-label="Halaman sebelumnya">←</a><?php endif; ?>
                                     <span>Hal. <?= $historyPage ?>/<?= $historyPageCount ?></span>
-                                    <?php if ($historyPage < $historyPageCount): ?><a class="btn btn-light btn-small" href="<?= h(historyPageUrl($historyPage + 1, $historyPageSize)) ?>" aria-label="Halaman berikutnya">→</a><?php endif; ?>
+                                    <?php if ($historyPage < $historyPageCount): ?><a class="btn btn-light btn-small" href="<?= h(historyPageUrl($historyPage + 1, $historyPageSize, $historyStatusFilter)) ?>" aria-label="Halaman berikutnya">→</a><?php endif; ?>
                                 </div>
                             </div>
                         <?php else: ?>
                             <a class="btn btn-light btn-small" href="index.php?page=my-submissions">Lihat semua</a>
                         <?php endif; ?>
                     </div>
-                        <?php if (!$visibleSubmissions): ?><div class="empty"><strong>Belum ada hasil pengisian</strong>Hasil checklist akan muncul di sini setelah responden mengirim form.</div><?php else: ?>
+                        <?php if ($page === 'my-submissions' ? !$historyPageSubmissions : !$visibleSubmissions): ?><div class="empty"><strong><?= $page === 'my-submissions' && $historyStatusFilter !== 'all' ? 'Tidak ada checklist dengan status ini' : 'Belum ada hasil pengisian' ?></strong><?= $page === 'my-submissions' && $historyStatusFilter !== 'all' ? 'Coba pilih kartu status lain di dashboard.' : 'Hasil checklist akan muncul di sini setelah responden mengirim form.' ?></div><?php else: ?>
                         <div class="table-wrap"><table><thead><tr><th>Checklist / responden</th><th>Email responden</th><th>Waktu dikirim</th><th>Status email</th><th>Status verifikasi</th><th>Aksi</th></tr></thead><tbody>
                             <?php foreach (($page === 'my-submissions' ? $historyPageSubmissions : array_slice($visibleSubmissions, 0, 12)) as $submission): ?>
                                 <tr<?= $page === 'my-submissions' && $submission['id'] === $requestedSubmissionId ? ' id="submission-' . h($submission['id']) . '"' : '' ?>>
